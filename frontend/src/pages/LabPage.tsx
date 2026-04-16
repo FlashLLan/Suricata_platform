@@ -4,7 +4,7 @@ import {
   ReactFlow, Background, Controls, MiniMap,
   addEdge, useNodesState, useEdgesState,
   type Connection, type Node, type Edge,
-  type NodeTypes, type NodeChange, type EdgeChange,
+  type NodeTypes, type EdgeTypes, type NodeChange, type EdgeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react'
@@ -17,13 +17,14 @@ import DevicePalette from '../components/lab/DevicePalette'
 import DeviceConfigPanel from '../components/lab/DeviceConfigPanel'
 import RuleLibraryPanel from '../components/lab/RuleLibraryPanel'
 import SimulationModal from '../components/lab/SimulationModal'
+import AnimatedPacketEdge from '../components/lab/AnimatedPacketEdge'
 
 import type { DeviceData, DeviceType, ActiveRule, RuleEntry } from '../types/lab'
 import { PREDEFINED_RULES } from '../data/rules'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type EdgeKind = 'same-zone' | 'cross-zone' | 'attack' | 'monitoring' | 'blocked'
+type EdgeKind = 'same-zone' | 'cross-zone' | 'attack' | 'monitoring' | 'blocked' | 'no-route'
 
 interface Snapshot {
   nodes: Node[]
@@ -33,6 +34,7 @@ interface Snapshot {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const NODE_TYPES: NodeTypes = { device: DeviceNode }
+const EDGE_TYPES: EdgeTypes = { 'animated-packet': AnimatedPacketEdge as never }
 
 const EDGE_STYLES: Record<EdgeKind, Pick<Edge, 'style' | 'animated' | 'labelStyle' | 'labelBgStyle'> & { labelBgPadding?: [number, number] }> = {
   'same-zone':  { style: { stroke: '#6366f1', strokeWidth: 2 }, animated: false },
@@ -40,7 +42,26 @@ const EDGE_STYLES: Record<EdgeKind, Pick<Edge, 'style' | 'animated' | 'labelStyl
   'attack':     { style: { stroke: '#ef4444', strokeWidth: 2 }, animated: true,  labelStyle: { fill: '#ef4444', fontSize: 10, fontWeight: 600 }, labelBgStyle: { fill: '#1f0000', fillOpacity: 0.8 }, labelBgPadding: [4, 2] },
   'monitoring': { style: { stroke: '#a855f7', strokeWidth: 1.5, strokeDasharray: '6 3' }, animated: true },
   'blocked':    { style: { stroke: '#dc2626', strokeWidth: 1, strokeDasharray: '4 4' }, animated: false },
+  'no-route':   { style: { stroke: '#06b6d4', strokeWidth: 1.5, strokeDasharray: '3 5' }, animated: false, labelStyle: { fill: '#06b6d4', fontSize: 10, fontWeight: 600 }, labelBgStyle: { fill: '#001a1f', fillOpacity: 0.85 }, labelBgPadding: [4, 2] },
 }
+
+/**
+ * Returns the network prefix of an IP based on its class:
+ *   Class A  → first octet        (e.g. 10.x.x.x → "10")
+ *   Class B  → first two octets   (e.g. 172.16.x.x → "172.16")
+ *   Class C  → first three octets (e.g. 192.168.1.x → "192.168.1")
+ *   Class D  → multicast, no prefix comparison
+ */
+function ipNetworkPrefix(ip: string, ipClass: DeviceData['ipClass']): string | null {
+  const parts = ip.split('.')
+  if (parts.length !== 4) return null
+  if (ipClass === 'A') return parts[0]
+  if (ipClass === 'B') return `${parts[0]}.${parts[1]}`
+  if (ipClass === 'C') return `${parts[0]}.${parts[1]}.${parts[2]}`
+  return null  // Class D multicast — skip prefix check
+}
+
+const GATEWAY_TYPES = ['router', 'firewall'] as const
 
 function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): { kind: EdgeKind; label?: string; warning?: string } {
   // Attacker involved — always an attack path
@@ -65,15 +86,30 @@ function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): { kind: EdgeKind
     }
   }
 
+  // Subnet mismatch — devices in different networks without a gateway between them
+  // Skip the check when either device IS a gateway (router/firewall bridges networks by design)
+  const isGateway = (GATEWAY_TYPES as readonly string[]).includes(srcData.deviceType) ||
+                    (GATEWAY_TYPES as readonly string[]).includes(tgtData.deviceType)
+
+  if (!isGateway && srcData.ip && tgtData.ip) {
+    const srcPrefix = ipNetworkPrefix(srcData.ip, srcData.ipClass)
+    const tgtPrefix = ipNetworkPrefix(tgtData.ip, tgtData.ipClass)
+    if (srcPrefix && tgtPrefix && srcPrefix !== tgtPrefix) {
+      return {
+        kind: 'no-route',
+        label: 'no route',
+        warning: `Subnet mismatch: ${srcData.ip} (${srcPrefix}.0) and ${tgtData.ip} (${tgtPrefix}.0) are on different networks. Direct L2 communication is impossible — route through a router or firewall.`,
+      }
+    }
+  }
+
   // Same zone — normal internal traffic
   if (srcData.zone === tgtData.zone) {
     return { kind: 'same-zone' }
   }
 
   // Cross-zone — flag it, suggest a gateway device
-  const needsGateway =
-    !['router', 'firewall'].includes(srcData.deviceType) &&
-    !['router', 'firewall'].includes(tgtData.deviceType)
+  const needsGateway = !isGateway
 
   return {
     kind: 'cross-zone',
@@ -103,6 +139,7 @@ function makeDeviceNode(deviceType: DeviceType, position: { x: number; y: number
     label: '', deviceType, ip: '', ipClass: 'C', subnet: '192.168.1.0/24',
     ports: '', os: '', zone: 'internal', notes: '',
     selectedAttacks: [], customAttackCommands: '',
+    noDefense: false, enabledDefenses: [], customDefenseConfig: '',
     ...defaults[deviceType],
   }
   return { id, type: 'device', position, data: data as unknown as Record<string, unknown> }
@@ -143,6 +180,8 @@ export default function LabPage() {
   const [rulesOpen, setRulesOpen] = useState(true)
   const [showSim, setShowSim] = useState(false)
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
+  // Edge IDs that are animating during simulation (to restore them afterward)
+  const animatingEdgeIds = useRef<string[]>([])
 
   // ── Undo history ──────────────────────────────────────────────────────────
   const history = useRef<Snapshot[]>([{ nodes: INITIAL_NODES, edges: INITIAL_EDGES }])
@@ -353,6 +392,64 @@ export default function LabPage() {
     setActiveRules(prev => [...prev, { entry: customEntry, customText: text }])
   }
 
+  // ── Simulation animation ──────────────────────────────────────────────────
+
+  /**
+   * Called when the simulation result arrives.
+   * Finds edges along the attack path and switches them to the animated-packet type.
+   */
+  function handleSimulationStart(packetRate: number, attackPath: string[][]) {
+    // Build a reverse map: ip → node id
+    const ipToNodeId: Record<string, string> = {}
+    for (const node of nodesRef.current) {
+      const ip = (node.data as unknown as DeviceData).ip
+      if (ip) ipToNodeId[ip] = node.id
+    }
+
+    const targetEdgeIds = new Set<string>()
+    for (const [srcIp, dstIp] of attackPath) {
+      const srcId = ipToNodeId[srcIp]
+      const dstId = ipToNodeId[dstIp]
+      if (!srcId || !dstId) continue
+      for (const edge of edgesRef.current) {
+        if (
+          (edge.source === srcId && edge.target === dstId) ||
+          (edge.source === dstId && edge.target === srcId)
+        ) {
+          targetEdgeIds.add(edge.id)
+        }
+      }
+    }
+
+    if (targetEdgeIds.size === 0) return
+
+    animatingEdgeIds.current = [...targetEdgeIds]
+
+    setEdges(eds => eds.map(e =>
+      targetEdgeIds.has(e.id)
+        ? { ...e, type: 'animated-packet', data: { packetRate, active: true } }
+        : e
+    ))
+  }
+
+  /** Called when the simulation modal closes — restore edges to normal. */
+  function handleSimulationEnd() {
+    const ids = new Set(animatingEdgeIds.current)
+    if (ids.size === 0) return
+    animatingEdgeIds.current = []
+
+    setEdges(eds => eds.map(e => {
+      if (!ids.has(e.id)) return e
+      // Restore to default attack-path style
+      return {
+        ...e,
+        type: undefined,
+        data: undefined,
+        ...EDGE_STYLES['attack'],
+      }
+    }))
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -396,8 +493,7 @@ export default function LabPage() {
           </button>
           <button
             onClick={() => setShowSim(true)}
-            disabled={activeRules.length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
           >
             <Play size={13} />
             Run Simulation
@@ -434,6 +530,7 @@ export default function LabPage() {
             onInit={setRfInstance as never}
             isValidConnection={isValidConnection}
             nodeTypes={NODE_TYPES}
+            edgeTypes={EDGE_TYPES}
             fitView
             deleteKeyCode="Delete"
             style={{ background: '#0a0b0f' }}
@@ -464,6 +561,7 @@ export default function LabPage() {
               <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block" /> cross-zone</span>
               <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-red-500 inline-block" /> attack path</span>
               <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-purple-500 inline-block" style={{ borderTop: '1px dashed #a855f7' }} /> monitor</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-cyan-500 inline-block" style={{ borderTop: '1px dashed #06b6d4' }} /> no route</span>
             </span>
           </div>
         </div>
@@ -512,7 +610,11 @@ export default function LabPage() {
         <SimulationModal
           projectId={project.id}
           activeRules={activeRules}
+          nodes={nodes}
+          edges={edges}
           onClose={() => setShowSim(false)}
+          onSimulationStart={handleSimulationStart}
+          onSimulationEnd={handleSimulationEnd}
         />
       )}
     </div>

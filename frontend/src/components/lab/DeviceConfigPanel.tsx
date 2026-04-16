@@ -6,6 +6,7 @@ import {
   ATTACK_COMMANDS, ATTACK_CATEGORY_LABELS, ATTACK_CATEGORY_COLORS,
   type AttackCategory,
 } from '../../data/attacks'
+import DefensePanel from './DefensePanel'
 
 // ─── IP helpers ───────────────────────────────────────────────────────────────
 
@@ -244,6 +245,7 @@ const EMPTY: DeviceData = {
   label: '', deviceType: 'workstation', ip: '', ipClass: 'C',
   subnet: '', ports: '', os: '', zone: 'internal', notes: '',
   selectedAttacks: [], customAttackCommands: '',
+  noDefense: false, enabledDefenses: [], customDefenseConfig: '',
 }
 
 export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
@@ -258,6 +260,9 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
         ...raw,
         selectedAttacks: raw.selectedAttacks ?? [],
         customAttackCommands: raw.customAttackCommands ?? '',
+        noDefense: raw.noDefense ?? false,
+        enabledDefenses: raw.enabledDefenses ?? [],
+        customDefenseConfig: raw.customDefenseConfig ?? '',
       })
       setIpError(null)
     }
@@ -286,6 +291,11 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
   function toggleAttack(id: string) {
     const current = form.selectedAttacks
     set('selectedAttacks', current.includes(id) ? current.filter(a => a !== id) : [...current, id])
+  }
+
+  function toggleDefense(id: string) {
+    const current = form.enabledDefenses
+    set('enabledDefenses', current.includes(id) ? current.filter(d => d !== id) : [...current, id])
   }
 
   function handleSave() {
@@ -422,6 +432,18 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
             customCommands={form.customAttackCommands}
             onToggle={toggleAttack}
             onCustomChange={v => set('customAttackCommands', v)}
+          />
+        )}
+
+        {/* Defense panel — shown for all non-attacker devices */}
+        {form.deviceType !== 'attacker' && (
+          <DefensePanel
+            noDefense={form.noDefense}
+            enabled={form.enabledDefenses}
+            customConfig={form.customDefenseConfig}
+            onNoDefenseToggle={v => set('noDefense', v)}
+            onToggle={toggleDefense}
+            onCustomChange={v => set('customDefenseConfig', v)}
           />
         )}
       </div>

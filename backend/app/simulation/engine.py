@@ -1,12 +1,20 @@
 """
-Simplified Suricata rule simulation engine.
-Matches parsed rules against simulated traffic packets and returns educational results.
+Topology-aware Suricata rule simulation engine.
+Extracts attacker + target from canvas edges, evaluates defenses,
+matches rules against generated traffic, and returns educational results.
 """
+import re
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
 from app.simulation.rule_parser import ParsedRule, parse_rule
 from app.simulation.scenarios import SimPacket, build_scenario
+from app.simulation.defenses import evaluate_defenses
+
+
+class SimulationValidationError(Exception):
+    """Raised when the topology fails pre-flight checks."""
 
 
 @dataclass
@@ -27,6 +35,13 @@ class SimulationResult:
     results: list[RuleMatchResult] = field(default_factory=list)
     summary: str = ""
     home_net: str = ""
+    # topology-aware additions
+    attacker_ip: str = ""
+    target_ips: list[str] = field(default_factory=list)
+    attack_path: list[list[str]] = field(default_factory=list)   # [[src_ip, dst_ip], ...]
+    defense_impacts: list[dict] = field(default_factory=list)
+    attack_blocked: bool = False
+    attack_reached_target: bool = True
 
 
 def run_simulation(
@@ -37,17 +52,47 @@ def run_simulation(
     """
     Run the simulation engine.
 
-    topology expected keys:
-      nodes: list of { data: { ip, zone, deviceType } }
+    topology expected shape:
+      nodes: [{ id, data: { ip, zone, deviceType, label, noDefense, enabledDefenses } }]
+      edges: [{ source, target }]
+
+    Raises SimulationValidationError if the topology is invalid for simulation.
     """
-    # Resolve HOME_NET and EXTERNAL_NET from topology
+    # ── 1. Validate and extract attack path ──────────────────────────────────
+    attacker_node = _find_attacker(topology)
+    if not attacker_node:
+        raise SimulationValidationError(
+            "No attacker device found in the topology. "
+            "Add an Attacker node to the canvas first."
+        )
+
+    target_nodes, attack_path = _find_targets(topology, attacker_node)
+    if not target_nodes:
+        raise SimulationValidationError(
+            "The attacker is not connected to any target device. "
+            "Draw a connection from the Attacker to at least one other device."
+        )
+
+    attacker_ip = attacker_node["data"].get("ip", "203.0.113.10")
+    target_ips = [n["data"].get("ip", "") for n in target_nodes if n["data"].get("ip")]
+    if not target_ips:
+        raise SimulationValidationError(
+            "Target device(s) have no IP address set. "
+            "Assign an IP to each device before running the simulation."
+        )
+
+    # ── 2. Resolve HOME_NET / EXTERNAL_NET ───────────────────────────────────
     home_ips, external_ips = _resolve_networks(topology)
     home_net_str = ", ".join(home_ips) if home_ips else "192.168.1.0/24"
 
-    # Build traffic for this scenario
-    packets = build_scenario(scenario_id, home_ips, external_ips)
+    # ── 3. Evaluate defenses ─────────────────────────────────────────────────
+    defense_impacts, attack_blocked = evaluate_defenses(scenario_id, target_nodes)
 
-    # Parse rules
+    # ── 4. Build traffic packets ──────────────────────────────────────────────
+    primary_target = target_ips[0]
+    packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
+
+    # ── 5. Parse and evaluate rules ───────────────────────────────────────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
     for raw in rule_texts:
         pr = parse_rule(raw)
@@ -62,12 +107,24 @@ def run_simulation(
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
 
-    if triggered == 0:
-        summary = f"No rules triggered against the {scenario_id.replace('-', ' ')} scenario."
+    # ── 6. Build summary ──────────────────────────────────────────────────────
+    if attack_blocked:
+        summary = (
+            f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
+            f"{triggered} of {total} IDS rule(s) also triggered."
+        )
+    elif triggered == 0:
+        summary = (
+            f"No IDS rules triggered — the {scenario_id.replace('-', ' ')} attack reached "
+            f"{primary_target} undetected."
+        )
     elif triggered == total:
-        summary = f"All {total} rule(s) triggered — good coverage for this scenario."
+        summary = f"All {total} rule(s) triggered — good IDS coverage for this scenario."
     else:
-        summary = f"{triggered} of {total} rule(s) triggered."
+        summary = (
+            f"{triggered} of {total} rule(s) triggered against "
+            f"{scenario_id.replace('-', ' ')} targeting {primary_target}."
+        )
 
     return SimulationResult(
         scenario=scenario_id,
@@ -76,20 +133,93 @@ def run_simulation(
         results=results,
         summary=summary,
         home_net=home_net_str,
+        attacker_ip=attacker_ip,
+        target_ips=target_ips,
+        attack_path=attack_path,
+        defense_impacts=defense_impacts,
+        attack_blocked=attack_blocked,
+        attack_reached_target=not attack_blocked,
     )
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Topology helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _find_attacker(topology: dict) -> Optional[dict]:
+    """Return the first node whose deviceType is 'attacker'."""
+    for node in topology.get("nodes", []):
+        if node.get("data", {}).get("deviceType") == "attacker":
+            return node
+    return None
+
+
+def _find_targets(
+    topology: dict,
+    attacker_node: dict,
+) -> tuple[list[dict], list[list[str]]]:
+    """
+    BFS from the attacker node through the topology edges.
+
+    Returns:
+        (target_nodes, attack_path)
+
+        target_nodes: all reachable non-attacker nodes
+        attack_path:  list of [src_ip, dst_ip] hops for animation
+    """
+    nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
+    edges = topology.get("edges", [])
+
+    # Build undirected adjacency (edges can be drawn in either direction)
+    adj: dict[str, list[str]] = {}
+    for edge in edges:
+        src = edge.get("source", "")
+        tgt = edge.get("target", "")
+        if src and tgt:
+            adj.setdefault(src, []).append(tgt)
+            adj.setdefault(tgt, []).append(src)
+
+    attacker_id = attacker_node["id"]
+    attacker_ip = attacker_node.get("data", {}).get("ip", "")
+
+    visited: set[str] = {attacker_id}
+    queue: deque[tuple[str, list[str]]] = deque()  # (node_id, path_of_node_ids)
+    queue.append((attacker_id, [attacker_id]))
+
+    target_nodes: list[dict] = []
+    attack_path: list[list[str]] = []
+
+    while queue:
+        current_id, path = queue.popleft()
+        for neighbor_id in adj.get(current_id, []):
+            if neighbor_id in visited:
+                continue
+            visited.add(neighbor_id)
+
+            neighbor_node = nodes_by_id.get(neighbor_id)
+            if not neighbor_node:
+                continue
+
+            neighbor_ip = neighbor_node.get("data", {}).get("ip", "")
+            current_ip = nodes_by_id[current_id].get("data", {}).get("ip", "")
+
+            # Record each hop as [src_ip, dst_ip]
+            if current_ip and neighbor_ip:
+                attack_path.append([current_ip, neighbor_ip])
+
+            if neighbor_node.get("data", {}).get("deviceType") != "attacker":
+                target_nodes.append(neighbor_node)
+                queue.append((neighbor_id, path + [neighbor_id]))
+
+    return target_nodes, attack_path
+
 
 def _resolve_networks(topology: dict) -> tuple[list[str], list[str]]:
-    """Extract internal and external IPs from the topology JSON."""
+    """Extract internal and external IPs from topology nodes by zone."""
     home: list[str] = []
     external: list[str] = []
 
-    nodes = topology.get("nodes", [])
-    for node in nodes:
+    for node in topology.get("nodes", []):
         data = node.get("data", {})
         ip = data.get("ip", "").strip()
         zone = data.get("zone", "internal")
@@ -108,6 +238,10 @@ def _resolve_networks(topology: dict) -> tuple[list[str], list[str]]:
     return home, external
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule matching helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _ip_matches(rule_ip: str, packet_ip: str, home_ips: list[str], ext_ips: list[str]) -> bool:
     if rule_ip in ("any", "!any"):
         return True
@@ -115,9 +249,6 @@ def _ip_matches(rule_ip: str, packet_ip: str, home_ips: list[str], ext_ips: list
         return packet_ip in home_ips
     if rule_ip == "$EXTERNAL_NET":
         return packet_ip in ext_ips or packet_ip not in home_ips
-    if rule_ip == "any":
-        return True
-    # Simple CIDR check (first 3 octets)
     if "/" in rule_ip:
         base = ".".join(rule_ip.split(".")[:3])
         return packet_ip.startswith(base)
@@ -126,9 +257,9 @@ def _ip_matches(rule_ip: str, packet_ip: str, home_ips: list[str], ext_ips: list
 
 def _port_matches(rule_port: str, packet_port: int) -> bool:
     rule_port = rule_port.strip()
-    if rule_port in ("any", "$HTTP_PORTS"):
-        if rule_port == "$HTTP_PORTS":
-            return packet_port in (80, 8080, 8443, 8888, 3000, 5000)
+    if rule_port == "$HTTP_PORTS":
+        return packet_port in (80, 8080, 8443, 8888, 3000, 5000)
+    if rule_port == "any":
         return True
     if rule_port.startswith("!"):
         return not _port_matches(rule_port[1:], packet_port)
@@ -156,18 +287,14 @@ def _protocol_matches(rule_proto: str, pkt_proto: str) -> bool:
 
 
 def _content_matches(rule: ParsedRule, packet: SimPacket) -> bool:
-    """Check if rule content keywords appear in packet payload."""
     payload = packet.payload
     payload_lower = payload.lower()
-
     for kw in rule.content:
         if kw not in payload:
             return False
-
     for kw in rule.nocase_content:
         if kw not in payload_lower:
             return False
-
     return True
 
 
@@ -206,9 +333,7 @@ def _evaluate_rule(
             continue
 
         if rule.flags and rule.flags.split(",")[0]:
-            flag_chars = rule.flags.split(",")[0].upper()
-            # Only check non-modifier flags
-            flag_chars = re.sub(r'[^SAFRPUECB]', '', flag_chars)
+            flag_chars = re.sub(r'[^SAFRPUECB]', '', rule.flags.split(",")[0].upper())
             if flag_chars and not all(f in pkt.flags.upper() for f in flag_chars):
                 continue
 
@@ -223,7 +348,6 @@ def _evaluate_rule(
 
         matched.append(pkt)
 
-    # Apply threshold: must have enough matching packets
     threshold = rule.threshold_count or 1
     fired = len(matched) >= threshold
 
@@ -239,7 +363,7 @@ def _evaluate_rule(
                 "description": p.description,
                 "payload_preview": p.payload[:120],
             }
-            for p in matched[:10]   # cap at 10 for readability
+            for p in matched[:10]
         ],
         explanation=_build_explanation(rule, matched, fired, scenario_id),
         why_not=_build_why_not(rule, packets, matched, home_ips, ext_ips) if not fired else None,
@@ -254,8 +378,8 @@ def _build_explanation(rule: ParsedRule, matched: list[SimPacket], fired: bool, 
 
     if rule.threshold_count and rule.threshold_count > 1:
         parts.append(
-            f"Threshold reached: {len(matched)} packets matched (threshold was {rule.threshold_count} "
-            f"in {rule.threshold_seconds}s)."
+            f"Threshold reached: {len(matched)} packets matched "
+            f"(threshold was {rule.threshold_count} in {rule.threshold_seconds}s)."
         )
 
     keywords = rule.nocase_content + rule.content
@@ -282,41 +406,28 @@ def _build_why_not(
     home_ips: list[str],
     ext_ips: list[str],
 ) -> str:
-    reasons: list[str] = []
-
     proto_match = [p for p in all_packets if _protocol_matches(rule.protocol, p.protocol)]
     if not proto_match:
-        reasons.append(
+        return (
             f"Protocol mismatch: rule expects '{rule.protocol}' but the scenario "
             f"generated {set(p.protocol for p in all_packets)} traffic."
         )
-        return " ".join(reasons)
 
-    content_fails = [
-        p for p in proto_match
-        if not _content_matches(rule, p)
-    ]
+    content_fails = [p for p in proto_match if not _content_matches(rule, p)]
     if content_fails and len(content_fails) == len(proto_match):
         kws = rule.content + rule.nocase_content
-        reasons.append(
+        return (
             f"Content keywords {kws} were not found in any packet payload for this scenario."
         )
 
     threshold = rule.threshold_count or 1
     if matched and len(matched) < threshold:
-        reasons.append(
+        return (
             f"Threshold not reached: {len(matched)} packet(s) matched but "
             f"{threshold} are needed within {rule.threshold_seconds}s."
         )
 
-    if not reasons:
-        reasons.append(
-            "The traffic in this scenario does not match this rule's protocol, "
-            "port, IP range, or payload conditions."
-        )
-
-    return " ".join(reasons)
-
-
-# Need re for flags parsing
-import re
+    return (
+        "The traffic in this scenario does not match this rule's protocol, "
+        "port, IP range, or payload conditions."
+    )

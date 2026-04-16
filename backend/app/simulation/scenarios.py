@@ -20,14 +20,18 @@ class SimPacket:
 
 def build_scenario(
     scenario_id: str,
-    internal_ips: list[str],
+    attacker_ip: str,
+    target_ip: str,
+    home_ips: list[str],
     external_ips: list[str],
 ) -> list[SimPacket]:
-    """Return a list of SimPackets for the given scenario."""
-    src_ext = external_ips[0] if external_ips else "203.0.113.10"
-    src_int = internal_ips[0] if internal_ips else "192.168.1.10"
-    dst_int = internal_ips[1] if len(internal_ips) > 1 else (internal_ips[0] if internal_ips else "192.168.1.20")
+    """
+    Return a list of SimPackets for the given scenario.
 
+    attacker_ip: resolved from the topology's attacker node
+    target_ip:   the primary target device's IP (first connected non-attacker node)
+    home_ips, external_ips: used for normal-browsing and DNS scenarios
+    """
     builders = {
         "normal-browsing":  _normal_browsing,
         "nmap-syn-scan":    _nmap_syn_scan,
@@ -42,7 +46,13 @@ def build_scenario(
     builder = builders.get(scenario_id)
     if not builder:
         return []
-    return builder(src_ext, src_int, dst_int)
+
+    # internal_src is a non-target internal host for outbound scenarios
+    internal_src = next(
+        (ip for ip in home_ips if ip != target_ip),
+        home_ips[0] if home_ips else "192.168.1.10",
+    )
+    return builder(attacker_ip, internal_src, target_ip)
 
 
 def _normal_browsing(ext: str, src: str, dst: str) -> list[SimPacket]:
@@ -136,7 +146,6 @@ def _sql_injection(ext: str, src: str, dst: str) -> list[SimPacket]:
 
 def _dns_tunneling(ext: str, src: str, dst: str) -> list[SimPacket]:
     packets = []
-    # Long subdomains encoding base64 data
     long_queries = [
         "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHRlc3Q.evil-tunnel.com",
         "dGhpcyBpcyBiYXNlNjQgZW5jb2RlZCBkYXRh.evil-tunnel.com",
@@ -145,7 +154,7 @@ def _dns_tunneling(ext: str, src: str, dst: str) -> list[SimPacket]:
     for i, query in enumerate(long_queries * 5):   # repeat to hit threshold
         packets.append(SimPacket(
             "udp", src, 54000 + i, "8.8.8.8", 53,
-            payload=f"\\x00\\x10 TXT? {query}",   # \\x00\\x10 = TXT record type
+            payload=f"\\x00\\x10 TXT? {query}",
             flags="",
             description=f"DNS TXT query: {query[:30]}…",
         ))

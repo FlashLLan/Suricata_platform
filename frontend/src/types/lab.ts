@@ -26,6 +26,10 @@ export interface DeviceData {
   // Attacker-only
   selectedAttacks: string[]
   customAttackCommands: string
+  // Defense configuration (non-attacker devices)
+  noDefense: boolean          // explicit "0 protection" mode
+  enabledDefenses: string[]   // list of defense IDs from defenses.ts
+  customDefenseConfig: string // free-form config text
 }
 
 export type RuleCategory = 'scanning' | 'brute-force' | 'web-attacks' | 'malware' | 'exfiltration' | 'dns' | 'custom'
@@ -79,6 +83,13 @@ export interface RuleMatchResult {
   why_not?: string
 }
 
+export interface DefenseImpact {
+  defense_id: string
+  defense_name: string
+  blocked: boolean          // did this defense stop the attack?
+  explanation: string       // what the defense did / why it didn't help
+}
+
 export interface SimulationResult {
   scenario: string
   total_packets: number
@@ -86,6 +97,13 @@ export interface SimulationResult {
   results: RuleMatchResult[]
   summary: string
   home_net: string
+  // topology-aware additions
+  attacker_ip?: string
+  target_ips?: string[]
+  attack_path?: string[][]  // list of [src_ip, dst_ip] hops for animation
+  defense_impacts?: DefenseImpact[]
+  attack_blocked?: boolean  // was the attack stopped by defenses before IDS?
+  attack_reached_target?: boolean
 }
 
 export interface ActiveRule {
