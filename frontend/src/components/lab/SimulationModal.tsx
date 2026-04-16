@@ -2,6 +2,7 @@ import { useState } from 'react'
 import {
   X, Play, ChevronDown, ChevronRight, ShieldCheck, ShieldOff,
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
+  Eye, EyeOff,
 } from 'lucide-react'
 import { SCENARIOS } from '../../data/rules'
 import { runSimulation } from '../../api/simulation'
@@ -92,6 +93,63 @@ function DefenseImpactSection({ impacts, blocked }: { impacts: DefenseImpact[]; 
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── IDS visibility section ───────────────────────────────────────────────────
+
+function IdsVisibilitySection({
+  idsVisible,
+  idsNodeLabels,
+  hasRules,
+}: {
+  idsVisible: boolean
+  idsNodeLabels: string[]
+  hasRules: boolean
+}) {
+  const noSensor = !idsVisible && idsNodeLabels.length === 0
+
+  return (
+    <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
+      idsVisible
+        ? 'border-indigo-700/40 bg-indigo-950/20'
+        : 'border-yellow-700/40 bg-yellow-950/10'
+    }`}>
+      {idsVisible
+        ? <Eye size={16} className="text-indigo-400 flex-shrink-0 mt-0.5" />
+        : <EyeOff size={16} className="text-yellow-400 flex-shrink-0 mt-0.5" />
+      }
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-semibold ${idsVisible ? 'text-indigo-300' : 'text-yellow-300'}`}>
+          {idsVisible ? 'IDS Visibility — Traffic Observed' : 'IDS Visibility — Traffic Not Observed'}
+        </p>
+        {idsVisible ? (
+          <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">
+            {idsNodeLabels.join(', ')} {idsNodeLabels.length === 1 ? 'has' : 'have'} a monitoring
+            link to a node on the attack path — Suricata rule evaluation applies.
+          </p>
+        ) : noSensor ? (
+          <p className="text-[11px] text-yellow-500/80 mt-0.5 leading-relaxed">
+            No Suricata IDS sensor is deployed in this topology. Add an IDS node and connect it
+            with a monitoring link to a device on the attack route.
+            {hasRules && ' Rules were loaded but not evaluated.'}
+          </p>
+        ) : (
+          <p className="text-[11px] text-yellow-500/80 mt-0.5 leading-relaxed">
+            An IDS sensor exists but is not connected to any node the attack passes through.
+            Move the monitoring link to the attacker, a router/firewall on the path, or the target.
+            {hasRules && ' Rules were loaded but not evaluated.'}
+          </p>
+        )}
+      </div>
+      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+        idsVisible
+          ? 'bg-indigo-900/60 text-indigo-300'
+          : 'bg-yellow-900/40 text-yellow-400'
+      }`}>
+        {idsVisible ? 'VISIBLE' : 'BLIND'}
+      </span>
     </div>
   )
 }
@@ -428,10 +486,24 @@ export default function SimulationModal({
               />
             )}
 
+            {/* IDS visibility */}
+            <IdsVisibilitySection
+              idsVisible={result.ids_visible ?? true}
+              idsNodeLabels={result.ids_node_labels ?? []}
+              hasRules={result.results.length > 0}
+            />
+
             {/* Per-rule results */}
             {result.results.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">IDS Rule Results</p>
+                <p className={`text-xs font-semibold uppercase tracking-wide ${
+                  result.ids_visible === false ? 'text-yellow-600' : 'text-gray-400'
+                }`}>
+                  IDS Rule Results
+                  {result.ids_visible === false && (
+                    <span className="ml-2 normal-case font-normal text-yellow-700">— not evaluated (IDS blind)</span>
+                  )}
+                </p>
                 {[...result.results]
                   .sort((a, b) => (b.fired ? 1 : 0) - (a.fired ? 1 : 0))
                   .map((r, i) => (

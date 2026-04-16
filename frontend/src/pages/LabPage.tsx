@@ -472,12 +472,14 @@ export default function LabPage() {
 
     setEdges(eds => eds.map(e => {
       if (!ids.has(e.id)) return e
-      // Restore to default attack-path style; preserve semantic edge data
+      // Restore to the edge's original kind style (stored in edge.data.edgeKind)
+      const edgeKind = (e.data?.edgeKind as EdgeKind | undefined) ?? 'attack'
+      const originalStyle = EDGE_STYLES[edgeKind] ?? EDGE_STYLES['attack']
       return {
         ...e,
         type: undefined,
         data: { ...(e.data ?? {}), active: false },
-        ...EDGE_STYLES['attack'],
+        ...originalStyle,
       }
     }))
   }

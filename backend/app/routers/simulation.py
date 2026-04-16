@@ -63,6 +63,8 @@ def simulate(
         "attack_blocked": result.attack_blocked,
         "attack_reached_target": result.attack_reached_target,
         "defense_impacts": result.defense_impacts,
+        "ids_visible": result.ids_visible,
+        "ids_node_labels": result.ids_node_labels,
         "results": [
             {
                 "rule_sid": r.rule_sid,

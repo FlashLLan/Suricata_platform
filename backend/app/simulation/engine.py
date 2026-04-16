@@ -42,6 +42,9 @@ class SimulationResult:
     defense_impacts: list[dict] = field(default_factory=list)
     attack_blocked: bool = False
     attack_reached_target: bool = True
+    # IDS visibility
+    ids_visible: bool = True          # was any IDS sensor on the attack path?
+    ids_node_labels: list[str] = field(default_factory=list)  # labels of observing IDS nodes
 
 
 def run_simulation(
@@ -66,7 +69,7 @@ def run_simulation(
             "Add an Attacker node to the canvas first."
         )
 
-    target_nodes, attack_path = _find_targets(topology, attacker_node)
+    target_nodes, attack_path, visited_node_ids = _find_targets(topology, attacker_node)
     if not target_nodes:
         raise SimulationValidationError(
             "The attacker is not connected to any target device. "
@@ -92,7 +95,10 @@ def run_simulation(
     primary_target = target_ips[0]
     packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
 
-    # ── 5. Parse and evaluate rules ───────────────────────────────────────────
+    # ── 5. Check IDS visibility ───────────────────────────────────────────────
+    ids_visible, ids_node_labels = _find_ids_visibility(topology, visited_node_ids)
+
+    # ── 6. Parse and evaluate rules (only if IDS can see the traffic) ─────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
     for raw in rule_texts:
         pr = parse_rule(raw)
@@ -100,30 +106,70 @@ def run_simulation(
             parsed_rules.append((raw, pr))
 
     results: list[RuleMatchResult] = []
-    for raw, pr in parsed_rules:
-        result = _evaluate_rule(pr, packets, home_ips, external_ips, scenario_id)
-        results.append(result)
+    if not ids_visible:
+        # IDS not on path — produce blind results so the UI can explain why
+        no_ids_in_topology = not any(
+            n.get("data", {}).get("deviceType") == "ids"
+            for n in topology.get("nodes", [])
+        )
+        blind_why = (
+            "No Suricata IDS sensor is deployed in this topology."
+            if no_ids_in_topology
+            else
+            "The IDS sensor is not connected to any node on the attack path. "
+            "Move the IDS monitoring link to a device the attack passes through."
+        )
+        for _raw, pr in parsed_rules:
+            results.append(RuleMatchResult(
+                rule_sid=pr.sid,
+                rule_msg=pr.msg,
+                fired=False,
+                explanation="IDS had no visibility into this traffic — rule was not evaluated.",
+                why_not=blind_why,
+            ))
+    else:
+        for raw, pr in parsed_rules:
+            result = _evaluate_rule(pr, packets, home_ips, external_ips, scenario_id)
+            results.append(result)
 
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
 
-    # ── 6. Build summary ──────────────────────────────────────────────────────
+    # ── 7. Build summary ──────────────────────────────────────────────────────
     if attack_blocked:
         summary = (
             f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
             f"{triggered} of {total} IDS rule(s) also triggered."
         )
+    elif not ids_visible:
+        no_ids_in_topology = not any(
+            n.get("data", {}).get("deviceType") == "ids"
+            for n in topology.get("nodes", [])
+        )
+        if no_ids_in_topology:
+            summary = (
+                f"No IDS sensor deployed — the {scenario_id.replace('-', ' ')} attack "
+                f"reached {primary_target} completely unmonitored."
+            )
+        else:
+            summary = (
+                f"IDS sensor is not on the attack path — the {scenario_id.replace('-', ' ')} "
+                f"attack reached {primary_target} undetected. Connect the IDS to a node on the route."
+            )
     elif triggered == 0:
         summary = (
             f"No IDS rules triggered — the {scenario_id.replace('-', ' ')} attack reached "
-            f"{primary_target} undetected."
+            f"{primary_target} undetected despite IDS visibility."
         )
     elif triggered == total:
-        summary = f"All {total} rule(s) triggered — good IDS coverage for this scenario."
+        summary = (
+            f"All {total} rule(s) triggered — {', '.join(ids_node_labels)} detected the "
+            f"{scenario_id.replace('-', ' ')} attack."
+        )
     else:
         summary = (
-            f"{triggered} of {total} rule(s) triggered against "
-            f"{scenario_id.replace('-', ' ')} targeting {primary_target}."
+            f"{triggered} of {total} rule(s) triggered by {scenario_id.replace('-', ' ')} "
+            f"targeting {primary_target}. IDS: {', '.join(ids_node_labels)}."
         )
 
     return SimulationResult(
@@ -139,6 +185,8 @@ def run_simulation(
         defense_impacts=defense_impacts,
         attack_blocked=attack_blocked,
         attack_reached_target=not attack_blocked,
+        ids_visible=ids_visible,
+        ids_node_labels=ids_node_labels,
     )
 
 
@@ -157,15 +205,16 @@ def _find_attacker(topology: dict) -> Optional[dict]:
 def _find_targets(
     topology: dict,
     attacker_node: dict,
-) -> tuple[list[dict], list[list[str]]]:
+) -> tuple[list[dict], list[list[str]], set[str]]:
     """
-    BFS from the attacker node through the topology edges.
+    BFS from the attacker node through communication edges only.
 
     Returns:
-        (target_nodes, attack_path)
+        (target_nodes, attack_path, visited_node_ids)
 
-        target_nodes: all reachable non-attacker nodes
-        attack_path:  list of [src_ip, dst_ip] hops for animation
+        target_nodes:     all reachable non-attacker nodes
+        attack_path:      list of [src_ip, dst_ip] hops for animation
+        visited_node_ids: set of all node IDs on the traversed path (used for IDS visibility)
     """
     nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
     edges = topology.get("edges", [])
@@ -226,7 +275,54 @@ def _find_targets(
                 target_nodes.append(neighbor_node)
                 queue.append((neighbor_id, path + [neighbor_id]))
 
-    return target_nodes, attack_path
+    return target_nodes, attack_path, visited
+
+
+def _find_ids_visibility(
+    topology: dict,
+    visited_node_ids: set[str],
+) -> tuple[bool, list[str]]:
+    """
+    Check whether any IDS node has a monitoring edge to a node on the attack path.
+
+    An IDS "sees" a flow if it has any edge (monitoring link) to a node that was
+    traversed during the BFS — attacker, intermediary infrastructure, or target.
+
+    Returns:
+        (ids_visible, ids_node_labels)
+    """
+    nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
+
+    ids_node_ids: set[str] = {
+        n["id"] for n in topology.get("nodes", [])
+        if n.get("data", {}).get("deviceType") == "ids"
+    }
+
+    if not ids_node_ids:
+        return False, []
+
+    visible_labels: list[str] = []
+    seen_ids: set[str] = set()
+
+    for edge in topology.get("edges", []):
+        src = edge.get("source", "")
+        tgt = edge.get("target", "")
+
+        # Identify which end is the IDS and which is the monitored node
+        if src in ids_node_ids:
+            ids_id, monitored_id = src, tgt
+        elif tgt in ids_node_ids:
+            ids_id, monitored_id = tgt, src
+        else:
+            continue
+
+        # IDS has visibility if the monitored node was on the attack path
+        if monitored_id in visited_node_ids and ids_id not in seen_ids:
+            seen_ids.add(ids_id)
+            label = nodes_by_id.get(ids_id, {}).get("data", {}).get("label", "Suricata IDS")
+            visible_labels.append(label)
+
+    return bool(visible_labels), visible_labels
 
 
 def _resolve_networks(topology: dict) -> tuple[list[str], list[str]]:

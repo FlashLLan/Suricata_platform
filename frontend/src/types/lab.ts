@@ -104,6 +104,9 @@ export interface SimulationResult {
   defense_impacts?: DefenseImpact[]
   attack_blocked?: boolean  // was the attack stopped by defenses before IDS?
   attack_reached_target?: boolean
+  // IDS visibility
+  ids_visible?: boolean           // was any IDS sensor on the attack path?
+  ids_node_labels?: string[]      // labels of IDS nodes that observed the traffic
 }
 
 export interface ActiveRule {
