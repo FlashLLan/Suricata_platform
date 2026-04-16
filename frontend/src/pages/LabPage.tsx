@@ -286,7 +286,7 @@ export default function LabPage() {
     const tgt = nodesRef.current.find(n => n.id === connection.target)
     if (!src || !tgt) return
 
-    const { kind, label, warning } = getEdgeKind(
+    const { kind, label, warning, monitoringOnly, communicationAllowed, crossZone } = getEdgeKind(
       src.data as unknown as DeviceData,
       tgt.data as unknown as DeviceData,
     )
