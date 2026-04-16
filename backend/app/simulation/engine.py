@@ -17,6 +17,21 @@ class SimulationValidationError(Exception):
     """Raised when the topology fails pre-flight checks."""
 
 
+# ─── Zone policy ─────────────────────────────────────────────────────────────
+# Zone pairs that are denied when connected DIRECTLY (without a gateway between them).
+# Source: topology.md §6 zone communication baseline table.
+_DENIED_DIRECT_ZONE_PAIRS: frozenset[frozenset] = frozenset({
+    frozenset({"external", "internal"}),    # external → internal: deny by default
+    frozenset({"external", "management"}),  # external → management: deny
+})
+
+# Scenarios where the attacker acts as a server (C2, DNS resolver proxy, normal web).
+# Traffic is initiated by an internal host, so the external↔internal check doesn't apply.
+_SKIP_ZONE_CHECK: set[str] = {"normal-browsing", "http-c2-beacon", "dns-tunneling"}
+
+# Infrastructure device types that are allowed to bridge zones
+_GATEWAY_DEVICE_TYPES: set[str] = {"router", "firewall"}
+
 # ─── Scenario prerequisites ───────────────────────────────────────────────────
 # Maps scenario_id → what the primary target must expose for the attack to make sense.
 #   required_ports:  at least one must appear in the target's configured ports
@@ -139,6 +154,79 @@ def _check_prerequisites(scenario_id: str, target_nodes: list[dict]) -> None:
             )
 
 
+def _check_zone_policy(
+    scenario_id: str,
+    topology: dict,
+    visited_node_ids: set[str],
+) -> None:
+    """
+    Verify that no hop in the attack path crosses a denied zone boundary without
+    a gateway (router or firewall) acting as intermediary.
+
+    Skipped for scenarios where traffic is internally initiated (C2 beacon, DNS
+    tunneling, normal browsing) since the attacker there acts as a remote server,
+    not an external aggressor.
+
+    Raises SimulationValidationError with an educational explanation on violation.
+    """
+    if scenario_id in _SKIP_ZONE_CHECK:
+        return
+
+    nodes_by_id: dict[str, dict] = {
+        n["id"]: n.get("data", {}) for n in topology.get("nodes", [])
+    }
+
+    for edge in topology.get("edges", []):
+        edge_data = edge.get("data") or {}
+
+        # Only inspect communication edges (skip monitoring / blocked / no-route)
+        if edge_data.get("monitoringOnly"):
+            continue
+        if not edge_data.get("communicationAllowed", True):
+            continue
+
+        src_id = edge.get("source", "")
+        tgt_id = edge.get("target", "")
+
+        # Only edges where both endpoints were traversed by the BFS
+        if src_id not in visited_node_ids or tgt_id not in visited_node_ids:
+            continue
+
+        src_data = nodes_by_id.get(src_id, {})
+        tgt_data = nodes_by_id.get(tgt_id, {})
+
+        src_zone = src_data.get("zone", "internal")
+        tgt_zone = tgt_data.get("zone", "internal")
+        src_type = src_data.get("deviceType", "")
+        tgt_type = tgt_data.get("deviceType", "")
+
+        zone_pair = frozenset({src_zone, tgt_zone})
+        if zone_pair not in _DENIED_DIRECT_ZONE_PAIRS:
+            continue
+
+        # Allowed if a gateway is one of the endpoints (it bridges the zones)
+        if src_type in _GATEWAY_DEVICE_TYPES or tgt_type in _GATEWAY_DEVICE_TYPES:
+            continue
+
+        # Direct violation — build a clear educational message
+        src_label = src_data.get("label", src_type or src_id)
+        tgt_label = tgt_data.get("label", tgt_type or tgt_id)
+
+        if "external" in zone_pair and "internal" in zone_pair:
+            raise SimulationValidationError(
+                f"Direct connection between external '{src_label}' and internal '{tgt_label}' "
+                f"is not allowed — in real networks, external traffic cannot reach internal hosts "
+                f"without passing through a Firewall or Router. "
+                f"Add a Firewall between them and reconnect through it."
+            )
+        if "external" in zone_pair and "management" in zone_pair:
+            raise SimulationValidationError(
+                f"Direct connection from the external zone to management zone '{tgt_label}' "
+                f"is denied — management interfaces must never be reachable from external networks. "
+                f"Place a Firewall between them."
+            )
+
+
 def run_simulation(
     scenario_id: str,
     rule_texts: list[str],
@@ -179,7 +267,10 @@ def run_simulation(
     # ── 2. Check service / port prerequisites ────────────────────────────────
     _check_prerequisites(scenario_id, target_nodes)
 
-    # ── 3. Resolve HOME_NET / EXTERNAL_NET ───────────────────────────────────
+    # ── 3. Check zone policy — deny direct external↔internal without gateway ──
+    _check_zone_policy(scenario_id, topology, visited_node_ids)
+
+    # ── 4. Resolve HOME_NET / EXTERNAL_NET ───────────────────────────────────
     home_ips, external_ips = _resolve_networks(topology)
     home_net_str = ", ".join(home_ips) if home_ips else "192.168.1.0/24"
 
@@ -193,7 +284,7 @@ def run_simulation(
     # ── 7. Check IDS visibility ───────────────────────────────────────────────
     ids_visible, ids_node_labels = _find_ids_visibility(topology, visited_node_ids)
 
-    # ── 8. Parse and evaluate rules (only if IDS can see the traffic) ─────────
+    # ── 8. Parse + evaluate rules (only when IDS can see traffic) ────────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
     for raw in rule_texts:
         pr = parse_rule(raw)
