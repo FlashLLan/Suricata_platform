@@ -7,7 +7,7 @@ import {
   type NodeTypes, type EdgeTypes, type NodeChange, type EdgeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle, Download } from 'lucide-react'
 
 import { getProject, updateProject, type Project } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
@@ -17,6 +17,7 @@ import DevicePalette from '../components/lab/DevicePalette'
 import DeviceConfigPanel from '../components/lab/DeviceConfigPanel'
 import RuleLibraryPanel from '../components/lab/RuleLibraryPanel'
 import SimulationModal from '../components/lab/SimulationModal'
+import ExportModal from '../components/lab/ExportModal'
 import AnimatedPacketEdge from '../components/lab/AnimatedPacketEdge'
 
 import type { DeviceData, DeviceType, ActiveRule, RuleEntry } from '../types/lab'
@@ -205,6 +206,7 @@ export default function LabPage() {
   const [activeRules, setActiveRules] = useState<ActiveRule[]>([])
   const [rulesOpen, setRulesOpen] = useState(true)
   const [showSim, setShowSim] = useState(false)
+  const [showExport, setShowExport] = useState(false)
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
   // Edge IDs that are animating during simulation (to restore them afterward)
   const animatingEdgeIds = useRef<string[]>([])
@@ -666,10 +668,10 @@ export default function LabPage() {
           </div>
         )}
 
-        <button
-          onClick={() => setRulesOpen(!rulesOpen)}
-          className="w-full flex items-center justify-between px-4 py-1.5 bg-gray-900 hover:bg-gray-800 transition border-b border-gray-800 text-xs text-gray-400"
+        <div
+          className="w-full flex items-center justify-between px-4 bg-gray-900 hover:bg-gray-800 transition border-b border-gray-800 text-xs text-gray-400 cursor-pointer select-none"
           style={{ height: 30 }}
+          onClick={() => setRulesOpen(!rulesOpen)}
         >
           <span className="font-medium">
             Rules
@@ -679,8 +681,18 @@ export default function LabPage() {
               </span>
             )}
           </span>
-          {rulesOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-        </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={e => { e.stopPropagation(); setShowExport(true) }}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-gray-400 hover:text-indigo-300 hover:bg-indigo-950/40 border border-transparent hover:border-indigo-800/40 transition"
+              title="Export rules and environment config"
+            >
+              <Download size={10} />
+              Export
+            </button>
+            {rulesOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </div>
+        </div>
 
         {rulesOpen && (
           <div style={{ height: RULE_PANEL_H - 36 }} className="overflow-hidden">
@@ -693,6 +705,16 @@ export default function LabPage() {
           </div>
         )}
       </div>
+
+      {/* Export modal */}
+      {showExport && project && (
+        <ExportModal
+          projectName={project.name}
+          activeRules={activeRules}
+          nodes={nodes}
+          onClose={() => setShowExport(false)}
+        />
+      )}
 
       {/* Simulation modal */}
       {showSim && project && (
