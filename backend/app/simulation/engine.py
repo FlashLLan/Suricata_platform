@@ -170,14 +170,29 @@ def _find_targets(
     nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
     edges = topology.get("edges", [])
 
-    # Build undirected adjacency (edges can be drawn in either direction)
+    # Build undirected adjacency — only include edges that represent real communication paths.
+    # Monitoring edges (IDS taps) and invalid edges (no-route, blocked) are excluded so the
+    # BFS path-finder cannot route traffic through them.
     adj: dict[str, list[str]] = {}
     for edge in edges:
         src = edge.get("source", "")
         tgt = edge.get("target", "")
-        if src and tgt:
-            adj.setdefault(src, []).append(tgt)
-            adj.setdefault(tgt, []).append(src)
+        if not src or not tgt:
+            continue
+
+        edge_data = edge.get("data") or {}
+
+        # Skip IDS monitoring links — they are passive taps, not communication paths
+        if edge_data.get("monitoringOnly"):
+            continue
+
+        # Skip edges where communication is explicitly disallowed (no-route, blocked).
+        # Default True preserves backward compatibility with saves that predate this field.
+        if not edge_data.get("communicationAllowed", True):
+            continue
+
+        adj.setdefault(src, []).append(tgt)
+        adj.setdefault(tgt, []).append(src)
 
     attacker_id = attacker_node["id"]
     attacker_ip = attacker_node.get("data", {}).get("ip", "")

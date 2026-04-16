@@ -63,15 +63,29 @@ function ipNetworkPrefix(ip: string, ipClass: DeviceData['ipClass']): string | n
 
 const GATEWAY_TYPES = ['router', 'firewall'] as const
 
-function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): { kind: EdgeKind; label?: string; warning?: string } {
+interface EdgeSemantics {
+  kind: EdgeKind
+  label?: string
+  warning?: string
+  /** True for IDS taps — does NOT create a routable communication path */
+  monitoringOnly: boolean
+  /** False for monitoring, blocked, and no-route edges */
+  communicationAllowed: boolean
+  /** True when source and target are in different zones */
+  crossZone: boolean
+}
+
+function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): EdgeSemantics {
+  const crossZone = srcData.zone !== tgtData.zone
+
   // Attacker involved — always an attack path
   if (srcData.deviceType === 'attacker' || tgtData.deviceType === 'attacker') {
-    return { kind: 'attack', label: 'attack path', warning: undefined }
+    return { kind: 'attack', label: 'attack path', warning: undefined, monitoringOnly: false, communicationAllowed: true, crossZone }
   }
 
   // IDS monitors everything — passive tap, not a routable link
   if (srcData.deviceType === 'ids' || tgtData.deviceType === 'ids') {
-    return { kind: 'monitoring' }
+    return { kind: 'monitoring', monitoringOnly: true, communicationAllowed: false, crossZone }
   }
 
   // Database should never be directly reachable from external
@@ -83,6 +97,9 @@ function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): { kind: EdgeKind
       kind: 'blocked',
       label: 'blocked',
       warning: 'Database should not be directly reachable from the external zone. Route through a firewall.',
+      monitoringOnly: false,
+      communicationAllowed: false,
+      crossZone,
     }
   }
 
@@ -99,13 +116,16 @@ function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): { kind: EdgeKind
         kind: 'no-route',
         label: 'no route',
         warning: `Subnet mismatch: ${srcData.ip} (${srcPrefix}.0) and ${tgtData.ip} (${tgtPrefix}.0) are on different networks. Direct L2 communication is impossible — route through a router or firewall.`,
+        monitoringOnly: false,
+        communicationAllowed: false,
+        crossZone,
       }
     }
   }
 
   // Same zone — normal internal traffic
   if (srcData.zone === tgtData.zone) {
-    return { kind: 'same-zone' }
+    return { kind: 'same-zone', monitoringOnly: false, communicationAllowed: true, crossZone: false }
   }
 
   // Cross-zone — flag it, suggest a gateway device
@@ -117,6 +137,9 @@ function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): { kind: EdgeKind
     warning: needsGateway
       ? `Cross-zone link between ${srcData.zone} and ${tgtData.zone} without a router or firewall. In a real network this traffic would be blocked.`
       : undefined,
+    monitoringOnly: false,
+    communicationAllowed: true,
+    crossZone: true,
   }
 }
 
@@ -153,9 +176,12 @@ const INITIAL_NODES: Node[] = [
 ]
 
 const INITIAL_EDGES: Edge[] = [
-  { id: 'e1-3', source: 'node-1', target: 'node-3', ...EDGE_STYLES['monitoring'] },
-  { id: 'e2-3', source: 'node-2', target: 'node-3', ...EDGE_STYLES['monitoring'] },
-  { id: 'e3-4', source: 'node-3', target: 'node-4', ...EDGE_STYLES['cross-zone'], label: 'internal → management' },
+  { id: 'e1-3', source: 'node-1', target: 'node-3', ...EDGE_STYLES['monitoring'],
+    data: { edgeKind: 'monitoring', monitoringOnly: true,  communicationAllowed: false, crossZone: false } },
+  { id: 'e2-3', source: 'node-2', target: 'node-3', ...EDGE_STYLES['monitoring'],
+    data: { edgeKind: 'monitoring', monitoringOnly: true,  communicationAllowed: false, crossZone: false } },
+  { id: 'e3-4', source: 'node-3', target: 'node-4', ...EDGE_STYLES['cross-zone'], label: 'internal → management',
+    data: { edgeKind: 'cross-zone', monitoringOnly: false, communicationAllowed: true,  crossZone: true  } },
 ]
 
 let nodeIdCounter = 100
@@ -285,6 +311,12 @@ export default function LabPage() {
       ...connection,
       ...edgeStyle,
       ...(label ? { label } : {}),
+      data: {
+        edgeKind: kind,
+        monitoringOnly,
+        communicationAllowed,
+        crossZone,
+      },
     }, eds))
   }, [saveSnapshot, setEdges])
 
@@ -427,7 +459,7 @@ export default function LabPage() {
 
     setEdges(eds => eds.map(e =>
       targetEdgeIds.has(e.id)
-        ? { ...e, type: 'animated-packet', data: { packetRate, active: true } }
+        ? { ...e, type: 'animated-packet', data: { ...(e.data ?? {}), packetRate, active: true } }
         : e
     ))
   }
@@ -440,11 +472,11 @@ export default function LabPage() {
 
     setEdges(eds => eds.map(e => {
       if (!ids.has(e.id)) return e
-      // Restore to default attack-path style
+      // Restore to default attack-path style; preserve semantic edge data
       return {
         ...e,
         type: undefined,
-        data: undefined,
+        data: { ...(e.data ?? {}), active: false },
         ...EDGE_STYLES['attack'],
       }
     }))
