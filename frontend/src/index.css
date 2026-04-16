@@ -18,3 +18,46 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+/* ── React Flow Controls dark theme ── */
+.react-flow__controls {
+  background: transparent !important;
+  box-shadow: none !important;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.react-flow__controls-button {
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
+  border-radius: 6px !important;
+  fill: #9ca3af !important;
+  color: #9ca3af !important;
+  width: 26px !important;
+  height: 26px !important;
+  padding: 5px !important;
+  transition: background 0.15s;
+}
+
+.react-flow__controls-button:hover {
+  background: #374151 !important;
+  fill: #e5e7eb !important;
+}
+
+.react-flow__controls-button svg {
+  fill: inherit !important;
+  max-width: 14px !important;
+  max-height: 14px !important;
+}
+
+/* ── React Flow MiniMap ── */
+.react-flow__minimap {
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+/* ── React Flow edge labels ── */
+.react-flow__edge-textbg {
+  fill-opacity: 0.85 !important;
+}

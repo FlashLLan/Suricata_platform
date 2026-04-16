@@ -11,16 +11,21 @@ export type DeviceType =
   | 'ids'
 
 export type NetworkZone = 'internal' | 'dmz' | 'external' | 'management'
+export type IPClass = 'A' | 'B' | 'C' | 'D'
 
 export interface DeviceData {
   label: string
   deviceType: DeviceType
   ip: string
+  ipClass: IPClass
   subnet: string
-  ports: string       // comma-separated, e.g. "80,443,22"
+  ports: string           // comma-separated, e.g. "80,443,22"
   os: string
   zone: NetworkZone
   notes: string
+  // Attacker-only
+  selectedAttacks: string[]
+  customAttackCommands: string
 }
 
 export type RuleCategory = 'scanning' | 'brute-force' | 'web-attacks' | 'malware' | 'exfiltration' | 'dns' | 'custom'
