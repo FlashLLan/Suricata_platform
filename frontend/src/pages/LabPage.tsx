@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react'
 import {
   ReactFlow, Background, Controls, MiniMap,
   addEdge, useNodesState, useEdgesState,
@@ -208,6 +208,30 @@ export default function LabPage() {
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
   // Edge IDs that are animating during simulation (to restore them afterward)
   const animatingEdgeIds = useRef<string[]>([])
+
+  // ── Rules panel resize ────────────────────────────────────────────────────
+  const [rulesPanelH, setRulesPanelH] = useState(240)
+  const rulesDrag = useRef<{ startY: number; startH: number } | null>(null)
+
+  useLayoutEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!rulesDrag.current) return
+      const delta = rulesDrag.current.startY - e.clientY
+      setRulesPanelH(Math.max(120, Math.min(560, rulesDrag.current.startH + delta)))
+    }
+    function onUp() { rulesDrag.current = null }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
+  function onRulesHandleMouseDown(e: React.MouseEvent) {
+    e.preventDefault()
+    rulesDrag.current = { startY: e.clientY, startH: rulesPanelH }
+  }
 
   // ── Undo history ──────────────────────────────────────────────────────────
   const history = useRef<Snapshot[]>([{ nodes: INITIAL_NODES, edges: INITIAL_EDGES }])
@@ -494,7 +518,7 @@ export default function LabPage() {
     )
   }
 
-  const RULE_PANEL_H = rulesOpen ? 240 : 36
+  const RULE_PANEL_H = rulesOpen ? rulesPanelH : 36
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-white overflow-hidden">
@@ -612,9 +636,20 @@ export default function LabPage() {
 
       {/* ── Bottom: Rule panel ── */}
       <div className="flex-shrink-0 border-t border-gray-800" style={{ height: RULE_PANEL_H }}>
+        {/* Resize handle — drag up/down to resize the panel */}
+        {rulesOpen && (
+          <div
+            className="h-1.5 cursor-ns-resize flex items-center justify-center group bg-gray-900 hover:bg-indigo-950/40 transition-colors border-b border-gray-800/60"
+            onMouseDown={onRulesHandleMouseDown}
+          >
+            <div className="w-8 h-0.5 rounded-full bg-gray-700 group-hover:bg-indigo-500 transition-colors" />
+          </div>
+        )}
+
         <button
           onClick={() => setRulesOpen(!rulesOpen)}
           className="w-full flex items-center justify-between px-4 py-1.5 bg-gray-900 hover:bg-gray-800 transition border-b border-gray-800 text-xs text-gray-400"
+          style={{ height: 30 }}
         >
           <span className="font-medium">
             Rules

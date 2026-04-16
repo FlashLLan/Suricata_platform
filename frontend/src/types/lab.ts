@@ -88,6 +88,7 @@ export interface DefenseImpact {
   defense_name: string
   blocked: boolean          // did this defense stop the attack?
   explanation: string       // what the defense did / why it didn't help
+  device_label?: string     // label of the device this defense belongs to
 }
 
 export interface SimulationResult {
