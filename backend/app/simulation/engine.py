@@ -3,6 +3,7 @@ Topology-aware Suricata rule simulation engine.
 Extracts attacker + target from canvas edges, evaluates defenses,
 matches rules against generated traffic, and returns educational results.
 """
+import ipaddress
 import re
 from collections import deque
 from dataclasses import dataclass, field
@@ -95,6 +96,8 @@ class SimulationResult:
     # IDS visibility
     ids_visible: bool = True          # was any IDS sensor on the attack path?
     ids_node_labels: list[str] = field(default_factory=list)  # labels of observing IDS nodes
+    # Event timeline
+    timeline: list[dict] = field(default_factory=list)
 
 
 def _parse_ports(ports_str: str) -> set[int]:
@@ -227,6 +230,150 @@ def _check_zone_policy(
             )
 
 
+def _build_timeline(
+    attack_path: list[list[str]],
+    topology: dict,
+    defense_impacts: list[dict],
+    attack_blocked: bool,
+    ids_visible: bool,
+    ids_node_labels: list[str],
+    rule_results: list[RuleMatchResult],
+) -> list[dict]:
+    """Build a step-by-step narrative timeline of the simulation."""
+
+    # IP → human label lookup
+    ip_to_label: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        ip = node.get("data", {}).get("ip", "")
+        label = node.get("data", {}).get("label", "")
+        if ip and label:
+            ip_to_label[ip] = label
+
+    events: list[dict] = []
+
+    # ── 1. Path hops ──────────────────────────────────────────────────────────
+    for from_ip, to_ip in attack_path:
+        from_label = ip_to_label.get(from_ip, from_ip)
+        to_label   = ip_to_label.get(to_ip,   to_ip)
+        events.append({
+            "type":       "hop",
+            "label":      f"{from_label} → {to_label}",
+            "detail":     f"Traffic routed from {from_label} ({from_ip}) to {to_label} ({to_ip})",
+            "from_ip":    from_ip,
+            "to_ip":      to_ip,
+            "from_label": from_label,
+            "to_label":   to_label,
+        })
+
+    # ── 2. Defense evaluation ─────────────────────────────────────────────────
+    if not defense_impacts:
+        events.append({
+            "type":   "no_defense",
+            "label":  "No defenses configured",
+            "detail": "Target device has no active defense controls — all traffic permitted.",
+        })
+    elif attack_blocked:
+        for impact in defense_impacts:
+            if impact.get("blocked"):
+                events.append({
+                    "type":       "defense_blocked",
+                    "label":      f"Blocked: {impact['defense_name']}",
+                    "detail":     impact["explanation"],
+                    "node_label": impact.get("device_label", ""),
+                })
+                break
+    else:
+        for impact in defense_impacts:
+            events.append({
+                "type":       "defense_passed",
+                "label":      f"Defense evaluated — traffic passed",
+                "detail":     impact["explanation"],
+                "node_label": impact.get("device_label", ""),
+            })
+
+    # ── 3. IDS visibility (skip if attack already blocked) ────────────────────
+    if not attack_blocked:
+        if ids_visible:
+            label_str = ", ".join(ids_node_labels) if ids_node_labels else "IDS"
+            events.append({
+                "type":       "ids_observed",
+                "label":      f"{label_str} observed the traffic",
+                "detail":     (
+                    f"{label_str} has a monitoring link to a node on the attack path — "
+                    "Suricata rule evaluation applies."
+                ),
+                "node_label": label_str,
+            })
+        else:
+            no_sensor = not ids_node_labels
+            events.append({
+                "type":   "ids_blind",
+                "label":  "IDS did not observe traffic",
+                "detail": (
+                    "No Suricata IDS sensor is deployed in this topology."
+                    if no_sensor else
+                    "An IDS sensor exists but is not connected to any node the attack passes through."
+                ),
+            })
+
+    # ── 4. Rule evaluation (only when IDS visible and attack not blocked) ─────
+    if not attack_blocked and ids_visible:
+        fired_rules  = [r for r in rule_results if r.fired]
+        missed_rules = [r for r in rule_results if not r.fired]
+        for r in fired_rules:
+            events.append({
+                "type":   "rule_fired",
+                "label":  f"Alert: {r.rule_msg or f'SID {r.rule_sid}'}",
+                "detail": r.explanation,
+                "sid":    r.rule_sid,
+            })
+        for r in missed_rules:
+            events.append({
+                "type":   "rule_missed",
+                "label":  f"No match: {r.rule_msg or f'SID {r.rule_sid}'}",
+                "detail": r.why_not or r.explanation,
+                "sid":    r.rule_sid,
+            })
+
+    # ── 5. Outcome ────────────────────────────────────────────────────────────
+    if attack_blocked:
+        events.append({
+            "type":   "outcome_blocked",
+            "label":  "Attack stopped by defenses",
+            "detail": "The attack was blocked before reaching its target — no traffic delivered.",
+        })
+    elif not ids_visible:
+        events.append({
+            "type":   "outcome_undetected",
+            "label":  "Attack reached target — undetected",
+            "detail": (
+                "Traffic was delivered to the target. No IDS coverage means "
+                "no detection was possible regardless of loaded rules."
+            ),
+        })
+    elif sum(1 for r in rule_results if r.fired) > 0:
+        alert_count = sum(1 for r in rule_results if r.fired)
+        events.append({
+            "type":   "outcome_detected",
+            "label":  f"Attack reached target — {alert_count} alert(s) generated",
+            "detail": (
+                f"Traffic was delivered and Suricata generated {alert_count} alert(s). "
+                "Detection succeeded but the attack was not blocked."
+            ),
+        })
+    else:
+        events.append({
+            "type":   "outcome_undetected",
+            "label":  "Attack reached target — rules did not fire",
+            "detail": (
+                "Traffic was delivered to the target but no loaded Suricata rules matched. "
+                "Either add more rules or investigate why the existing ones missed."
+            ),
+        })
+
+    return events
+
+
 def run_simulation(
     scenario_id: str,
     rule_texts: list[str],
@@ -321,7 +468,18 @@ def run_simulation(
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
 
-    # ── 9. Build summary ──────────────────────────────────────────────────────
+    # ── 9. Build event timeline ───────────────────────────────────────────────
+    timeline = _build_timeline(
+        attack_path=attack_path,
+        topology=topology,
+        defense_impacts=defense_impacts,
+        attack_blocked=attack_blocked,
+        ids_visible=ids_visible,
+        ids_node_labels=ids_node_labels,
+        rule_results=results,
+    )
+
+    # ── 10. Build summary ─────────────────────────────────────────────────────
     if attack_blocked:
         summary = (
             f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
@@ -373,6 +531,7 @@ def run_simulation(
         attack_reached_target=not attack_blocked,
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
+        timeline=timeline,
     )
 
 
@@ -539,35 +698,9 @@ def _resolve_networks(topology: dict) -> tuple[list[str], list[str]]:
 # Rule matching helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _ip_matches(rule_ip: str, packet_ip: str, home_ips: list[str], ext_ips: list[str]) -> bool:
-    if rule_ip in ("any", "!any"):
-        return True
-    if rule_ip == "$HOME_NET":
-        return packet_ip in home_ips
-    if rule_ip == "$EXTERNAL_NET":
-        return packet_ip in ext_ips or packet_ip not in home_ips
-    if "/" in rule_ip:
-        base = ".".join(rule_ip.split(".")[:3])
-        return packet_ip.startswith(base)
-    return rule_ip == packet_ip
-
-
-def _port_matches(rule_port: str, packet_port: int) -> bool:
-    rule_port = rule_port.strip()
-    if rule_port == "$HTTP_PORTS":
-        return packet_port in (80, 8080, 8443, 8888, 3000, 5000)
-    if rule_port == "any":
-        return True
-    if rule_port.startswith("!"):
-        return not _port_matches(rule_port[1:], packet_port)
-    if ":" in rule_port:
-        lo, hi = rule_port.split(":")
-        return int(lo) <= packet_port <= int(hi)
-    try:
-        return int(rule_port) == packet_port
-    except ValueError:
-        return True
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Low-level matchers (protocol, IP, port, flow, content, pcre)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _protocol_matches(rule_proto: str, pkt_proto: str) -> bool:
     if rule_proto == "tcp" and pkt_proto in ("tcp", "http", "https"):
@@ -583,16 +716,133 @@ def _protocol_matches(rule_proto: str, pkt_proto: str) -> bool:
     return rule_proto == pkt_proto
 
 
-def _content_matches(rule: ParsedRule, packet: SimPacket) -> bool:
-    payload = packet.payload
-    payload_lower = payload.lower()
-    for kw in rule.content:
-        if kw not in payload:
-            return False
-    for kw in rule.nocase_content:
-        if kw not in payload_lower:
-            return False
-    return True
+def _ip_in_cidr(ip: str, cidr: str) -> bool:
+    """Return True if *ip* falls inside *cidr* (e.g. '192.168.0.0/16')."""
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+
+
+def _split_ip_group(group_str: str) -> list[str]:
+    """
+    Split a comma-separated IP group respecting nested brackets.
+    e.g. '$HOME_NET,!192.168.1.1'  →  ['$HOME_NET', '!192.168.1.1']
+    """
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in group_str:
+        if ch == '[':
+            depth += 1
+            current.append(ch)
+        elif ch == ']':
+            depth -= 1
+            current.append(ch)
+        elif ch == ',' and depth == 0:
+            p = ''.join(current).strip()
+            if p:
+                parts.append(p)
+            current = []
+        else:
+            current.append(ch)
+    tail = ''.join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _ip_matches(rule_ip: str, packet_ip: str, home_ips: list[str], ext_ips: list[str]) -> bool:
+    """
+    Match a rule IP spec against a packet IP.
+
+    Handles:
+      - any
+      - $HOME_NET, $EXTERNAL_NET, $HTTP_SERVERS, $SQL_SERVERS, $DNS_SERVERS
+      - negation  !<spec>
+      - CIDR      192.168.0.0/16
+      - exact     192.168.1.1
+      - groups    [spec1,spec2,...]
+    """
+    rule_ip = rule_ip.strip()
+
+    if rule_ip == "any":
+        return True
+
+    # Variables
+    _VAR_HOME = {"$HOME_NET", "$HTTP_SERVERS", "$SQL_SERVERS", "$DNS_SERVERS",
+                 "$SMTP_SERVERS", "$HTTP_SERVERS"}
+    if rule_ip in _VAR_HOME:
+        return packet_ip in home_ips
+    if rule_ip == "$EXTERNAL_NET":
+        return packet_ip not in home_ips
+
+    # Negation
+    if rule_ip.startswith("!"):
+        return not _ip_matches(rule_ip[1:], packet_ip, home_ips, ext_ips)
+
+    # Group  [a,b,c]
+    if rule_ip.startswith("[") and rule_ip.endswith("]"):
+        parts = _split_ip_group(rule_ip[1:-1])
+        return any(_ip_matches(p, packet_ip, home_ips, ext_ips) for p in parts)
+
+    # CIDR
+    if "/" in rule_ip:
+        return _ip_in_cidr(packet_ip, rule_ip)
+
+    # Exact
+    return rule_ip == packet_ip
+
+
+def _port_matches(rule_port: str, packet_port: int) -> bool:
+    """
+    Match a rule port spec against an integer packet port.
+
+    Handles:
+      - any
+      - $HTTP_PORTS, $SSH_PORTS, $FTP_PORTS, $DNS_PORTS
+      - negation  !<spec>
+      - groups    [80,443,8080]
+      - ranges    1024:65535  |  :1023  |  1024:
+      - exact     80
+    """
+    rule_port = rule_port.strip()
+
+    # Variables
+    if rule_port == "$HTTP_PORTS":
+        return packet_port in (80, 8080, 8443, 8888, 3000, 5000)
+    if rule_port == "$SSH_PORTS":
+        return packet_port == 22
+    if rule_port == "$FTP_PORTS":
+        return packet_port in (20, 21)
+    if rule_port == "$DNS_PORTS":
+        return packet_port == 53
+    if rule_port == "$SHELLCODE_PORTS":
+        return packet_port > 1023
+
+    if rule_port == "any":
+        return True
+
+    # Negation
+    if rule_port.startswith("!"):
+        return not _port_matches(rule_port[1:], packet_port)
+
+    # Group  [80,443,8080]
+    if rule_port.startswith("[") and rule_port.endswith("]"):
+        parts = rule_port[1:-1].split(",")
+        return any(_port_matches(p.strip(), packet_port) for p in parts)
+
+    # Range  lo:hi  |  lo:  |  :hi
+    if ":" in rule_port:
+        lo_s, hi_s = rule_port.split(":", 1)
+        lo = int(lo_s) if lo_s.strip() else 0
+        hi = int(hi_s) if hi_s.strip() else 65535
+        return lo <= packet_port <= hi
+
+    try:
+        return int(rule_port) == packet_port
+    except ValueError:
+        return True   # unknown variable — don't block
 
 
 def _flow_matches(rule: ParsedRule, packet: SimPacket) -> bool:
@@ -605,6 +855,82 @@ def _flow_matches(rule: ParsedRule, packet: SimPacket) -> bool:
         return False
     if "to_client" in flow and packet.flow != "to_client":
         return False
+    return True
+
+
+def _content_matches(rule: ParsedRule, packet: SimPacket) -> bool:
+    """
+    Check all content keywords against the packet payload.
+
+    Sticky buffer content (http.uri, http.method, http.header) is matched
+    against the full payload — our simulated packets embed all HTTP information
+    (method, URI, headers) inline in the payload string, so this is accurate
+    for educational purposes.
+    """
+    payload = packet.payload
+    payload_lower = payload.lower()
+
+    # Plain content (case-sensitive)
+    for kw in rule.content:
+        if kw not in payload:
+            return False
+
+    # content + nocase (stored lower-cased)
+    for kw in rule.nocase_content:
+        if kw not in payload_lower:
+            return False
+
+    # Sticky buffer content — always compared case-insensitively because HTTP
+    # URIs, methods, and headers are treated case-insensitively by convention.
+    for kw in rule.http_uri_content:
+        if kw.lower() not in payload_lower:
+            return False
+
+    for kw in rule.http_method_content:
+        if kw.lower() not in payload_lower:
+            return False
+
+    for kw in rule.http_header_content:
+        if kw.lower() not in payload_lower:
+            return False
+
+    return True
+
+
+def _pcre_matches(rule: ParsedRule, packet: SimPacket) -> bool:
+    """
+    Evaluate PCRE patterns against the packet payload.
+    Supports /i (IGNORECASE), /s (DOTALL), /m (MULTILINE) flags.
+    Invalid regex patterns are silently skipped (don't block the match).
+    """
+    if not rule.pcre:
+        return True
+
+    text = packet.payload
+
+    for pattern_str in rule.pcre:
+        # Strip Perl-style /pattern/flags wrapper
+        pm = re.match(r'^/(.+)/([gimsIxAEGRUPHDCKMSYCBOV]*)$', pattern_str, re.DOTALL)
+        if pm:
+            pattern   = pm.group(1)
+            flags_str = pm.group(2).lower()
+            re_flags  = 0
+            if 'i' in flags_str:
+                re_flags |= re.IGNORECASE
+            if 's' in flags_str:
+                re_flags |= re.DOTALL
+            if 'm' in flags_str:
+                re_flags |= re.MULTILINE
+            try:
+                if not re.search(pattern, text, re_flags):
+                    return False
+            except re.error:
+                pass   # malformed regex — don't penalise
+        else:
+            # No wrapper — treat as literal substring
+            if pattern_str not in text:
+                return False
+
     return True
 
 
@@ -638,6 +964,9 @@ def _evaluate_rule(
             continue
 
         if not _content_matches(rule, pkt):
+            continue
+
+        if not _pcre_matches(rule, pkt):
             continue
 
         if rule.dsize_gt is not None and len(pkt.payload) <= rule.dsize_gt:
@@ -679,10 +1008,15 @@ def _build_explanation(rule: ParsedRule, matched: list[SimPacket], fired: bool, 
             f"(threshold was {rule.threshold_count} in {rule.threshold_seconds}s)."
         )
 
-    keywords = rule.nocase_content + rule.content
+    keywords = (
+        rule.content + rule.nocase_content
+        + rule.http_uri_content + rule.http_method_content + rule.http_header_content
+    )
     if keywords:
         kw_list = ", ".join(f'"{k}"' for k in keywords[:4])
         parts.append(f"Content keywords matched: {kw_list}.")
+    if rule.pcre:
+        parts.append(f"PCRE pattern matched: {rule.pcre[0]!r}.")
 
     if rule.protocol == "icmp":
         parts.append("ICMP type matched (echo request = type 8).")
@@ -703,28 +1037,122 @@ def _build_why_not(
     home_ips: list[str],
     ext_ips: list[str],
 ) -> str:
-    proto_match = [p for p in all_packets if _protocol_matches(rule.protocol, p.protocol)]
-    if not proto_match:
+    """
+    Walk through each check in order and report the first one that eliminates
+    all packets — gives students a precise, actionable explanation.
+    """
+    # ── Protocol ─────────────────────────────────────────────────────────────
+    proto_pass = [p for p in all_packets if _protocol_matches(rule.protocol, p.protocol)]
+    if not proto_pass:
+        protos = sorted({p.protocol for p in all_packets})
         return (
-            f"Protocol mismatch: rule expects '{rule.protocol}' but the scenario "
-            f"generated {set(p.protocol for p in all_packets)} traffic."
+            f"Protocol mismatch: rule checks '{rule.protocol}' traffic, "
+            f"but this scenario only generates {protos} packets. "
+            f"Change the rule protocol to match, or pick a scenario that produces "
+            f"'{rule.protocol}' traffic."
         )
 
-    content_fails = [p for p in proto_match if not _content_matches(rule, p)]
-    if content_fails and len(content_fails) == len(proto_match):
-        kws = rule.content + rule.nocase_content
+    # ── IP addresses ──────────────────────────────────────────────────────────
+    ip_pass = [
+        p for p in proto_pass
+        if _ip_matches(rule.src_ip, p.src_ip, home_ips, ext_ips)
+        and _ip_matches(rule.dst_ip, p.dst_ip, home_ips, ext_ips)
+    ]
+    if not ip_pass:
+        src_ips = sorted({p.src_ip for p in proto_pass})
+        dst_ips = sorted({p.dst_ip for p in proto_pass})
         return (
-            f"Content keywords {kws} were not found in any packet payload for this scenario."
+            f"IP address mismatch: rule expects src={rule.src_ip} → dst={rule.dst_ip}, "
+            f"but scenario traffic goes {src_ips} → {dst_ips}. "
+            f"Check that $HOME_NET / $EXTERNAL_NET align with your topology zones, "
+            f"or adjust the IP fields in your rule."
         )
 
+    # ── Ports ─────────────────────────────────────────────────────────────────
+    port_pass = [
+        p for p in ip_pass
+        if _port_matches(rule.src_port, p.src_port)
+        and _port_matches(rule.dst_port, p.dst_port)
+    ]
+    if not port_pass:
+        dst_ports = sorted({p.dst_port for p in ip_pass})
+        return (
+            f"Port mismatch: rule expects src port {rule.src_port} / "
+            f"dst port {rule.dst_port}, but scenario uses destination "
+            f"port(s) {dst_ports}. "
+            f"Update the port in your rule or verify the target device's open ports."
+        )
+
+    # ── TCP flags ─────────────────────────────────────────────────────────────
+    flag_pass: list[SimPacket] = []
+    if rule.flags:
+        flag_chars = re.sub(r'[^SAFRPUECB]', '', rule.flags.split(",")[0].upper())
+        for p in port_pass:
+            if flag_chars and not all(f in p.flags.upper() for f in flag_chars):
+                continue
+            flag_pass.append(p)
+        if not flag_pass:
+            pkt_flags = sorted({p.flags for p in port_pass})
+            return (
+                f"TCP flags mismatch: rule requires flags='{rule.flags}', "
+                f"but packets in this scenario carry flags {pkt_flags}. "
+                f"Adjust the flags keyword, or remove it to match any flags."
+            )
+    else:
+        flag_pass = port_pass
+
+    # ── Flow state ────────────────────────────────────────────────────────────
+    flow_pass = [p for p in flag_pass if _flow_matches(rule, p)]
+    if not flow_pass:
+        pkt_flows = sorted({p.flow for p in flag_pass})
+        hint = ""
+        if "established" in rule.flow:
+            hint = (
+                " 'flow:established' only matches mid-session packets (data exchange), "
+                "not SYN/handshake packets."
+            )
+        return (
+            f"Flow state mismatch: rule requires flow='{rule.flow}', "
+            f"but scenario packets are marked as {pkt_flows}.{hint}"
+        )
+
+    # ── Content keywords ──────────────────────────────────────────────────────
+    content_pass = [p for p in flow_pass if _content_matches(rule, p)]
+    if not content_pass:
+        all_kws = (
+            rule.content
+            + rule.nocase_content
+            + [k.upper() for k in rule.http_uri_content]    # show original case
+            + [k.upper() for k in rule.http_method_content]
+            + [k.upper() for k in rule.http_header_content]
+        )
+        if all_kws:
+            kw_list = ", ".join(repr(k) for k in all_kws[:4])
+            return (
+                f"Content not found: keyword(s) {kw_list} were not present in any "
+                f"matching packet's payload for this scenario. "
+                f"The scenario may not generate traffic containing these strings."
+            )
+
+    # ── PCRE ──────────────────────────────────────────────────────────────────
+    pcre_pass = [p for p in (content_pass or flow_pass) if _pcre_matches(rule, p)]
+    if rule.pcre and not pcre_pass:
+        return (
+            f"PCRE pattern(s) {rule.pcre[:2]} did not match any packet payload "
+            f"in this scenario. Verify the regex against the expected traffic."
+        )
+
+    # ── Threshold ─────────────────────────────────────────────────────────────
     threshold = rule.threshold_count or 1
     if matched and len(matched) < threshold:
         return (
             f"Threshold not reached: {len(matched)} packet(s) matched but "
-            f"{threshold} are needed within {rule.threshold_seconds}s."
+            f"{threshold} are required within {rule.threshold_seconds}s. "
+            f"This scenario may not generate enough repeated packets to cross the threshold."
         )
 
     return (
-        "The traffic in this scenario does not match this rule's protocol, "
-        "port, IP range, or payload conditions."
+        "No packets matched all conditions simultaneously "
+        "(protocol + IPs + ports + flags + flow + content). "
+        "This rule may be designed for a different traffic pattern than this scenario generates."
     )

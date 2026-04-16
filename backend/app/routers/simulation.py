@@ -24,12 +24,6 @@ def simulate(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not req.rule_texts and req.scenario_id != "normal-browsing":
-        raise HTTPException(
-            status_code=400,
-            detail="Add at least one Suricata rule before running the simulation.",
-        )
-
     # Prefer topology sent directly from the frontend (current canvas state);
     # fall back to the saved DB version only if the client didn't send one.
     if req.topology is not None:
@@ -65,6 +59,7 @@ def simulate(
         "defense_impacts": result.defense_impacts,
         "ids_visible": result.ids_visible,
         "ids_node_labels": result.ids_node_labels,
+        "timeline": result.timeline,
         "results": [
             {
                 "rule_sid": r.rule_sid,

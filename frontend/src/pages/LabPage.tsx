@@ -462,30 +462,50 @@ export default function LabPage() {
       if (ip) ipToNodeId[ip] = node.id
     }
 
-    const targetEdgeIds = new Set<string>()
+    // Attack path edges — animated red packets
+    const attackEdgeIds = new Set<string>()
+    // Collect all node IDs on the attack path (to find connected IDS monitoring edges)
+    const pathNodeIds = new Set<string>()
+
     for (const [srcIp, dstIp] of attackPath) {
       const srcId = ipToNodeId[srcIp]
       const dstId = ipToNodeId[dstIp]
+      if (srcId) pathNodeIds.add(srcId)
+      if (dstId) pathNodeIds.add(dstId)
       if (!srcId || !dstId) continue
       for (const edge of edgesRef.current) {
         if (
           (edge.source === srcId && edge.target === dstId) ||
           (edge.source === dstId && edge.target === srcId)
         ) {
-          targetEdgeIds.add(edge.id)
+          attackEdgeIds.add(edge.id)
         }
       }
     }
 
-    if (targetEdgeIds.size === 0) return
+    if (attackEdgeIds.size === 0) return
 
-    animatingEdgeIds.current = [...targetEdgeIds]
+    // IDS monitoring edges connected to any node on the attack path — pulse purple
+    const monitorEdgeIds = new Set<string>()
+    for (const edge of edgesRef.current) {
+      if (edge.data?.edgeKind === 'monitoring' &&
+          (pathNodeIds.has(edge.source) || pathNodeIds.has(edge.target))) {
+        monitorEdgeIds.add(edge.id)
+      }
+    }
 
-    setEdges(eds => eds.map(e =>
-      targetEdgeIds.has(e.id)
-        ? { ...e, type: 'animated-packet', data: { ...(e.data ?? {}), packetRate, active: true } }
-        : e
-    ))
+    animatingEdgeIds.current = [...attackEdgeIds, ...monitorEdgeIds]
+
+    setEdges(eds => eds.map(e => {
+      if (attackEdgeIds.has(e.id)) {
+        return { ...e, type: 'animated-packet', data: { ...(e.data ?? {}), packetRate, active: true } }
+      }
+      if (monitorEdgeIds.has(e.id)) {
+        // Keep monitoring style but mark active so the edge knows simulation is running
+        return { ...e, data: { ...(e.data ?? {}), active: true, packetRate: Math.max(1, Math.round(packetRate / 3)) } }
+      }
+      return e
+    }))
   }
 
   /** Called when the simulation modal closes — restore edges to normal. */
@@ -595,7 +615,7 @@ export default function LabPage() {
             proOptions={{ hideAttribution: true }}
           >
             <Background color="#1a1f2e" gap={24} size={1} />
-            <Controls className="[&>button]:bg-gray-800 [&>button]:border-gray-700 [&>button]:text-gray-300" />
+            <Controls className="[&>button]:bg-gray-800 [&>button]:border-gray-700 [&>button]:text-gray-300 !bottom-8" />
             <MiniMap
               nodeColor="#6366f1"
               maskColor="rgba(0,0,0,0.7)"

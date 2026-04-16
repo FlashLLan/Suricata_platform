@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { X, ChevronDown, ChevronRight, Terminal, Plus } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { X, ChevronDown, ChevronRight, Terminal, Plus, CheckCircle2 } from 'lucide-react'
 import type { Node } from '@xyflow/react'
 import type { DeviceData, NetworkZone, DeviceType, IPClass } from '../../types/lab'
 import {
@@ -252,6 +252,8 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
   const raw = node?.data as unknown as DeviceData | undefined
   const [form, setForm] = useState<DeviceData>(EMPTY)
   const [ipError, setIpError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (raw) {
@@ -301,6 +303,9 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
   function handleSave() {
     if (ipError) return
     onUpdate(node!.id, form)
+    setSaved(true)
+    if (savedTimer.current) clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => setSaved(false), 2000)
   }
 
   const info = CLASS_INFO[form.ipClass]
@@ -449,9 +454,9 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
       </div>
 
       {/* Footer */}
-      <div className="p-4 border-t border-gray-800 flex-shrink-0">
+      <div className="p-4 border-t border-gray-800 flex-shrink-0 space-y-2">
         {ipError && (
-          <p className="text-[10px] text-red-400 mb-2">Fix the IP address error before saving.</p>
+          <p className="text-[10px] text-red-400">Fix the IP address error before saving.</p>
         )}
         <button
           onClick={handleSave}
@@ -460,6 +465,15 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
         >
           Apply changes
         </button>
+        {/* Save confirmation */}
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 ${
+          saved
+            ? 'opacity-100 border-green-700/40 bg-green-950/30'
+            : 'opacity-0 border-transparent bg-transparent pointer-events-none'
+        }`}>
+          <CheckCircle2 size={13} className="text-green-400 flex-shrink-0" />
+          <p className="text-xs text-green-300 font-medium">Changes applied to canvas</p>
+        </div>
       </div>
     </div>
   )

@@ -3,11 +3,12 @@ import {
   X, Play, ChevronDown, ChevronRight, ShieldCheck, ShieldOff,
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
+  Minus, XCircle, ZapOff, Info,
 } from 'lucide-react'
 import { SCENARIOS } from '../../data/rules'
 import { runSimulation } from '../../api/simulation'
 import type {
-  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact,
+  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent,
 } from '../../types/lab'
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData } from '../../types/lab'
@@ -287,13 +288,102 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
   )
 }
 
+// ─── Timeline event row ───────────────────────────────────────────────────────
+
+type TLMeta = {
+  Icon: React.ElementType
+  iconClass: string
+  rowClass: string
+  badge?: string
+  badgeClass?: string
+}
+
+function timelineMeta(type: TimelineEvent['type']): TLMeta {
+  switch (type) {
+    case 'hop':
+      return { Icon: ArrowRight,    iconClass: 'text-gray-500',   rowClass: 'border-gray-700/30 bg-gray-800/20' }
+    case 'defense_blocked':
+      return { Icon: ShieldCheck,   iconClass: 'text-green-400',  rowClass: 'border-green-700/30 bg-green-950/20',  badge: 'BLOCKED',  badgeClass: 'bg-green-900/60 text-green-300' }
+    case 'defense_passed':
+      return { Icon: ShieldOff,     iconClass: 'text-amber-500',  rowClass: 'border-amber-700/20 bg-amber-950/10', badge: 'PASSED',   badgeClass: 'bg-amber-900/50 text-amber-400' }
+    case 'no_defense':
+      return { Icon: Shield,        iconClass: 'text-gray-600',   rowClass: 'border-gray-700/20 bg-gray-800/20',  badge: 'OPEN',     badgeClass: 'bg-gray-700/60 text-gray-500' }
+    case 'ids_observed':
+      return { Icon: Eye,           iconClass: 'text-indigo-400', rowClass: 'border-indigo-700/30 bg-indigo-950/20', badge: 'VISIBLE', badgeClass: 'bg-indigo-900/60 text-indigo-300' }
+    case 'ids_blind':
+      return { Icon: EyeOff,        iconClass: 'text-yellow-400', rowClass: 'border-yellow-700/30 bg-yellow-950/10', badge: 'BLIND', badgeClass: 'bg-yellow-900/40 text-yellow-400' }
+    case 'rule_fired':
+      return { Icon: Zap,           iconClass: 'text-red-400',    rowClass: 'border-red-700/40 bg-red-950/20',    badge: 'ALERT',    badgeClass: 'bg-red-900/60 text-red-300' }
+    case 'rule_missed':
+      return { Icon: ZapOff,        iconClass: 'text-gray-600',   rowClass: 'border-gray-700/20 bg-gray-800/10' }
+    case 'outcome_blocked':
+      return { Icon: CheckCircle2,  iconClass: 'text-green-400',  rowClass: 'border-green-700/40 bg-green-950/20', badge: 'STOPPED',   badgeClass: 'bg-green-900/60 text-green-300' }
+    case 'outcome_detected':
+      return { Icon: AlertTriangle, iconClass: 'text-yellow-400', rowClass: 'border-yellow-700/30 bg-yellow-950/10', badge: 'DETECTED', badgeClass: 'bg-yellow-900/40 text-yellow-300' }
+    case 'outcome_undetected':
+      return { Icon: XCircle,       iconClass: 'text-red-500',    rowClass: 'border-red-700/30 bg-red-950/10',    badge: 'MISSED',   badgeClass: 'bg-red-900/50 text-red-400' }
+    default:
+      return { Icon: Minus,         iconClass: 'text-gray-600',   rowClass: 'border-gray-700/20 bg-gray-800/10' }
+  }
+}
+
+function TimelineRow({ event, index }: { event: TimelineEvent; index: number }) {
+  const [open, setOpen] = useState(false)
+  const meta = timelineMeta(event.type)
+  const { Icon } = meta
+
+  return (
+    <div className={`rounded-xl border overflow-hidden ${meta.rowClass}`}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/5 transition"
+      >
+        {/* Step number */}
+        <span className="text-[10px] text-gray-600 w-4 text-right flex-shrink-0 font-mono">{index + 1}</span>
+        {/* Icon */}
+        <Icon size={14} className={`flex-shrink-0 ${meta.iconClass}`} />
+        {/* Label */}
+        <span className="flex-1 text-xs font-medium text-gray-200 truncate">{event.label}</span>
+        {/* SID badge for rules */}
+        {event.sid && (
+          <span className="text-[9px] font-mono text-gray-600 flex-shrink-0">SID {event.sid}</span>
+        )}
+        {/* Status badge */}
+        {meta.badge && (
+          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 ${meta.badgeClass}`}>
+            {meta.badge}
+          </span>
+        )}
+        {open
+          ? <ChevronDown size={12} className="text-gray-600 flex-shrink-0" />
+          : <ChevronRight size={12} className="text-gray-600 flex-shrink-0" />
+        }
+      </button>
+      {open && (
+        <div className="px-10 pb-3 border-t border-gray-700/20">
+          <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">{event.detail}</p>
+          {/* Show IP hop detail */}
+          {event.from_ip && event.to_ip && (
+            <div className="flex items-center gap-2 mt-2">
+              <span className="font-mono text-[10px] text-red-400 bg-red-950/30 px-1.5 py-0.5 rounded">{event.from_ip}</span>
+              <ArrowRight size={10} className="text-gray-600" />
+              <span className="font-mono text-[10px] text-gray-300 bg-gray-800/60 px-1.5 py-0.5 rounded">{event.to_ip}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Attack Path tab ──────────────────────────────────────────────────────────
 
 function AttackPathTab({ result }: { result: SimulationResult }) {
   const path = result.attack_path ?? []
   const hasPath = path.length > 0
+  const timeline = result.timeline ?? []
 
-  // Extract ordered unique IPs in path
+  // Build ordered unique IP list for the route visualization
   const pathNodes: string[] = []
   for (const [src, dst] of path) {
     if (pathNodes.length === 0) pathNodes.push(src)
@@ -301,88 +391,63 @@ function AttackPathTab({ result }: { result: SimulationResult }) {
   }
 
   const isAttacker = (ip: string) => ip === result.attacker_ip
-  const isTarget = (ip: string) => result.target_ips?.includes(ip)
+  const isTarget   = (ip: string) => result.target_ips?.includes(ip) ?? false
 
   function nodeStyle(ip: string) {
-    if (isAttacker(ip)) return { ring: 'border-red-500 bg-red-950/40', text: 'text-red-300', label: 'ATTACKER' }
-    if (isTarget(ip)) return { ring: 'border-blue-500 bg-blue-950/40', text: 'text-blue-300', label: 'TARGET' }
-    return { ring: 'border-amber-700/50 bg-amber-950/20', text: 'text-amber-300', label: 'HOP' }
+    if (isAttacker(ip)) return { ring: 'border-red-500 bg-red-950/40',   text: 'text-red-300',   label: 'ATTACKER' }
+    if (isTarget(ip))   return { ring: 'border-blue-500 bg-blue-950/40', text: 'text-blue-300',  label: 'TARGET' }
+    return                     { ring: 'border-amber-700/50 bg-amber-950/20', text: 'text-amber-300', label: 'HOP' }
+  }
+
+  if (!hasPath) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
+        <Network size={32} className="text-gray-700" />
+        <div>
+          <p className="text-sm font-semibold text-gray-400">No Attack Path Found</p>
+          <p className="text-xs text-gray-600 mt-1 max-w-xs leading-relaxed">
+            The attacker could not reach any target. Check that communication
+            edges connect the attacker to a target device.
+          </p>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="space-y-4">
-      {!hasPath ? (
-        <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
-          <Network size={32} className="text-gray-700" />
-          <div>
-            <p className="text-sm font-semibold text-gray-400">No Attack Path Found</p>
-            <p className="text-xs text-gray-600 mt-1 max-w-xs leading-relaxed">
-              The attacker could not reach any target through the current topology. Check
-              that communication edges exist between the attacker and target device(s).
-            </p>
-          </div>
-        </div>
-      ) : (
-        <>
-          {/* Path visualization */}
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-3">
-              Route — {pathNodes.length} node(s), {path.length} hop(s)
-            </p>
-            <div className="flex items-center gap-1 flex-wrap">
-              {pathNodes.map((ip, i) => {
-                const style = nodeStyle(ip)
-                return (
-                  <div key={i} className="flex items-center gap-1">
-                    <div className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl border ${style.ring}`}>
-                      <span className={`text-[9px] font-bold uppercase tracking-wider ${style.text}`}>
-                        {style.label}
-                      </span>
-                      <span className="font-mono text-xs text-white">{ip}</span>
-                    </div>
-                    {i < pathNodes.length - 1 && (
-                      <ArrowRight size={14} className="text-gray-600 flex-shrink-0" />
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
 
-          {/* Hop table */}
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
-              Hop Detail
-            </p>
-            <div className="space-y-1">
-              {path.map(([src, dst], i) => (
-                <div key={i} className="flex items-center gap-3 px-3 py-2 bg-gray-800/40 rounded-lg">
-                  <span className="text-[10px] text-gray-600 w-4 text-right">{i + 1}</span>
-                  <span className="font-mono text-xs text-gray-300">{src}</span>
-                  <ArrowRight size={12} className="text-gray-600 flex-shrink-0" />
-                  <span className="font-mono text-xs text-gray-300">{dst}</span>
-                  {isAttacker(src) && (
-                    <span className="ml-auto text-[9px] text-red-400 bg-red-950/40 px-1.5 py-0.5 rounded">origin</span>
-                  )}
-                  {isTarget(dst) && (
-                    <span className="ml-auto text-[9px] text-blue-400 bg-blue-950/40 px-1.5 py-0.5 rounded">target</span>
-                  )}
+      {/* Route visualization */}
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-3">
+          Route — {pathNodes.length} node(s), {path.length} hop(s)
+        </p>
+        <div className="flex items-center gap-1 flex-wrap">
+          {pathNodes.map((ip, i) => {
+            const s = nodeStyle(ip)
+            return (
+              <div key={i} className="flex items-center gap-1">
+                <div className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl border ${s.ring}`}>
+                  <span className={`text-[9px] font-bold uppercase tracking-wider ${s.text}`}>{s.label}</span>
+                  <span className="font-mono text-xs text-white">{ip}</span>
                 </div>
-              ))}
-            </div>
-          </div>
+                {i < pathNodes.length - 1 && <ArrowRight size={14} className="text-gray-600 flex-shrink-0" />}
+              </div>
+            )
+          })}
+        </div>
+      </div>
 
-          {/* IDS on path note */}
-          {result.ids_node_labels && result.ids_node_labels.length > 0 && (
-            <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl border border-indigo-700/30 bg-indigo-950/20">
-              <Eye size={13} className="text-indigo-400 mt-0.5 flex-shrink-0" />
-              <p className="text-[11px] text-indigo-300 leading-relaxed">
-                <span className="font-semibold">{result.ids_node_labels.join(', ')}</span> monitored
-                traffic along this path via a monitoring link.
-              </p>
-            </div>
-          )}
-        </>
+      {/* Event timeline */}
+      {timeline.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+            Event Timeline
+          </p>
+          {timeline.map((event, i) => (
+            <TimelineRow key={i} event={event} index={i} />
+          ))}
+        </div>
       )}
     </div>
   )
@@ -486,12 +551,41 @@ function DefensesTab({ result }: { result: SimulationResult }) {
 
 // ─── Detection tab ────────────────────────────────────────────────────────────
 
+const LEARNING_DISMISSED_KEY = 'suricata_learning_mode_dismissed'
+
 function DetectionTab({ result }: { result: SimulationResult }) {
   const idsVisible = result.ids_visible ?? true
   const noSensor = !idsVisible && (result.ids_node_labels?.length ?? 0) === 0
+  const [learningVisible, setLearningVisible] = useState(
+    () => localStorage.getItem(LEARNING_DISMISSED_KEY) !== '1'
+  )
+
+  function dismissLearning() {
+    localStorage.setItem(LEARNING_DISMISSED_KEY, '1')
+    setLearningVisible(false)
+  }
 
   return (
     <div className="space-y-3">
+      {/* Learning Mode notice — dismissible */}
+      {learningVisible && (
+        <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-indigo-950/20 border border-indigo-800/20 text-[11px] text-indigo-300/80">
+          <Info size={12} className="flex-shrink-0 mt-0.5 text-indigo-400/70" />
+          <span className="flex-1">
+            <span className="font-semibold text-indigo-300">Learning Mode</span>
+            {' '}— rule evaluation is a simplified educational simulation. Most keywords are supported,
+            but results may differ from real Suricata. Use this to learn detection logic, not for production.
+          </span>
+          <button
+            onClick={dismissLearning}
+            className="flex-shrink-0 text-indigo-600 hover:text-indigo-400 transition-colors ml-1"
+            title="Dismiss"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {/* IDS visibility banner */}
       <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
         idsVisible

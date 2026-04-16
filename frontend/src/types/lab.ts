@@ -91,6 +91,31 @@ export interface DefenseImpact {
   device_label?: string     // label of the device this defense belongs to
 }
 
+export type TimelineEventType =
+  | 'hop'
+  | 'defense_blocked'
+  | 'defense_passed'
+  | 'no_defense'
+  | 'ids_observed'
+  | 'ids_blind'
+  | 'rule_fired'
+  | 'rule_missed'
+  | 'outcome_blocked'
+  | 'outcome_detected'
+  | 'outcome_undetected'
+
+export interface TimelineEvent {
+  type: TimelineEventType
+  label: string
+  detail: string
+  from_ip?: string
+  to_ip?: string
+  from_label?: string
+  to_label?: string
+  node_label?: string
+  sid?: string
+}
+
 export interface SimulationResult {
   scenario: string
   total_packets: number
@@ -108,6 +133,8 @@ export interface SimulationResult {
   // IDS visibility
   ids_visible?: boolean           // was any IDS sensor on the attack path?
   ids_node_labels?: string[]      // labels of IDS nodes that observed the traffic
+  // Event timeline
+  timeline?: TimelineEvent[]
 }
 
 export interface ActiveRule {
