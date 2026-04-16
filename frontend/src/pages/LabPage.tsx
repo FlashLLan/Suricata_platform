@@ -1,8 +1,8 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useEffect, useState, useCallback } from 'react'
-import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, Connection } from '@xyflow/react'
+import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, type Connection } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { getProject, updateProject, Project } from '../api/projects'
+import { getProject, updateProject, type Project } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
 
 const DEFAULT_NODES = [

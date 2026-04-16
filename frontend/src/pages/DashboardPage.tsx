@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listProjects, createProject, deleteProject, ProjectSummary } from '../api/projects'
+import { listProjects, createProject, deleteProject, type ProjectSummary } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
 
 function timeAgo(dateStr: string): string {
