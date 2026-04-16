@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(uvicorn --version)",
-      "Bash(python -m uvicorn --version)"
-    ]
-  }
-}
