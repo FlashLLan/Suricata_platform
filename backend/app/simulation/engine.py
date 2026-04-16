@@ -17,6 +17,41 @@ class SimulationValidationError(Exception):
     """Raised when the topology fails pre-flight checks."""
 
 
+# ─── Scenario prerequisites ───────────────────────────────────────────────────
+# Maps scenario_id → what the primary target must expose for the attack to make sense.
+#   required_ports:  at least one must appear in the target's configured ports
+#                    (None = no port requirement)
+#   required_types:  target's deviceType must be in this list
+#                    (None = any device type)
+
+_SCENARIO_PREREQS: dict[str, dict] = {
+    "ssh-brute-force": {
+        "required_ports":  [22],
+        "required_types":  None,
+        "port_label":      "SSH (port 22)",
+    },
+    "http-brute-force": {
+        "required_ports":  [80, 443, 8080],
+        "required_types":  None,
+        "port_label":      "HTTP or HTTPS (port 80, 443, or 8080)",
+    },
+    "sql-injection": {
+        "required_ports":  [80, 443, 8080],
+        "required_types":  ["web-server"],
+        "port_label":      "HTTP or HTTPS (port 80, 443, or 8080)",
+        "type_label":      "Web Server",
+    },
+    # Recon / flood — target any reachable host, no specific service needed
+    "nmap-syn-scan":   {"required_ports": None, "required_types": None},
+    "ping-sweep":      {"required_ports": None, "required_types": None},
+    # DNS tunneling traffic goes outbound to an external resolver, not the BFS target
+    "dns-tunneling":   {"required_ports": None, "required_types": None},
+    # C2 beacon — internal host phones home to attacker; attacker IS the server
+    "http-c2-beacon":  {"required_ports": None, "required_types": None},
+    "normal-browsing": {"required_ports": None, "required_types": None},
+}
+
+
 @dataclass
 class RuleMatchResult:
     rule_sid: str
@@ -45,6 +80,63 @@ class SimulationResult:
     # IDS visibility
     ids_visible: bool = True          # was any IDS sensor on the attack path?
     ids_node_labels: list[str] = field(default_factory=list)  # labels of observing IDS nodes
+
+
+def _parse_ports(ports_str: str) -> set[int]:
+    """Parse a comma-separated port string (e.g. '22,80,443') into a set of ints."""
+    result: set[int] = set()
+    for part in ports_str.split(","):
+        part = part.strip()
+        if part.isdigit():
+            result.add(int(part))
+    return result
+
+
+def _check_prerequisites(scenario_id: str, target_nodes: list[dict]) -> None:
+    """
+    Verify the primary target exposes the service the chosen attack requires.
+    Raises SimulationValidationError with an educational explanation on failure.
+    """
+    prereq = _SCENARIO_PREREQS.get(scenario_id)
+    if not prereq or not target_nodes:
+        return
+
+    target    = target_nodes[0]
+    data      = target.get("data", {})
+    label     = data.get("label", "target device")
+    dev_type  = data.get("deviceType", "")
+    open_ports = _parse_ports(data.get("ports", ""))
+
+    required_types = prereq.get("required_types")
+    required_ports = prereq.get("required_ports")
+    port_label     = prereq.get("port_label", "the required port")
+    type_label     = prereq.get("type_label", "")
+    attack_name    = scenario_id.replace("-", " ").title()
+
+    # ── Device-type check ────────────────────────────────────────────────────
+    if required_types and dev_type not in required_types:
+        expected = f"a {type_label}" if type_label else f"one of: {', '.join(required_types)}"
+        raise SimulationValidationError(
+            f"{attack_name} targets web applications and requires the target to be {expected}. "
+            f"'{label}' is configured as a '{dev_type.replace('-', ' ')}'. "
+            f"Change the device type in Device Config to 'Web Server', or pick a different target."
+        )
+
+    # ── Port check ───────────────────────────────────────────────────────────
+    if required_ports:
+        if not open_ports:
+            raise SimulationValidationError(
+                f"{attack_name} requires {port_label} to be open on the target. "
+                f"'{label}' has no ports configured. "
+                f"Open Device Config and add the required port to the 'Open Ports' field."
+            )
+        if not any(p in open_ports for p in required_ports):
+            listed = ", ".join(str(p) for p in sorted(open_ports))
+            raise SimulationValidationError(
+                f"{attack_name} requires {port_label} to be open on the target. "
+                f"'{label}' exposes [{listed}] — none match the required service. "
+                f"Add the correct port in Device Config, or choose an appropriate target."
+            )
 
 
 def run_simulation(
@@ -84,21 +176,24 @@ def run_simulation(
             "Assign an IP to each device before running the simulation."
         )
 
-    # ── 2. Resolve HOME_NET / EXTERNAL_NET ───────────────────────────────────
+    # ── 2. Check service / port prerequisites ────────────────────────────────
+    _check_prerequisites(scenario_id, target_nodes)
+
+    # ── 3. Resolve HOME_NET / EXTERNAL_NET ───────────────────────────────────
     home_ips, external_ips = _resolve_networks(topology)
     home_net_str = ", ".join(home_ips) if home_ips else "192.168.1.0/24"
 
-    # ── 3. Evaluate defenses ─────────────────────────────────────────────────
+    # ── 5. Evaluate defenses ─────────────────────────────────────────────────
     defense_impacts, attack_blocked = evaluate_defenses(scenario_id, target_nodes)
 
-    # ── 4. Build traffic packets ──────────────────────────────────────────────
+    # ── 6. Build traffic packets ──────────────────────────────────────────────
     primary_target = target_ips[0]
     packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
 
-    # ── 5. Check IDS visibility ───────────────────────────────────────────────
+    # ── 7. Check IDS visibility ───────────────────────────────────────────────
     ids_visible, ids_node_labels = _find_ids_visibility(topology, visited_node_ids)
 
-    # ── 6. Parse and evaluate rules (only if IDS can see the traffic) ─────────
+    # ── 8. Parse and evaluate rules (only if IDS can see the traffic) ─────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
     for raw in rule_texts:
         pr = parse_rule(raw)
@@ -135,7 +230,7 @@ def run_simulation(
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
 
-    # ── 7. Build summary ──────────────────────────────────────────────────────
+    # ── 9. Build summary ──────────────────────────────────────────────────────
     if attack_blocked:
         summary = (
             f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
