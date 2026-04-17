@@ -9,9 +9,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
+import logging
+
 from app.simulation.rule_parser import ParsedRule, parse_rule
 from app.simulation.scenarios import SimPacket, build_scenario
 from app.simulation.defenses import evaluate_defenses
+
+log = logging.getLogger(__name__)
 
 
 class SimulationValidationError(Exception):
@@ -98,6 +102,9 @@ class SimulationResult:
     ids_node_labels: list[str] = field(default_factory=list)  # labels of observing IDS nodes
     # Event timeline
     timeline: list[dict] = field(default_factory=list)
+    # Simulation mode metadata
+    mode: str = "python"              # "python" | "suricata"
+    suricata_fallback: bool = False   # suricata was requested but fell back to python
 
 
 def _parse_ports(ports_str: str) -> set[int]:
@@ -378,6 +385,7 @@ def run_simulation(
     scenario_id: str,
     rule_texts: list[str],
     topology: dict,
+    mode: str = "python",
 ) -> SimulationResult:
     """
     Run the simulation engine.
@@ -431,7 +439,7 @@ def run_simulation(
     # ── 7. Check IDS visibility ───────────────────────────────────────────────
     ids_visible, ids_node_labels = _find_ids_visibility(topology, visited_node_ids)
 
-    # ── 8. Parse + evaluate rules (only when IDS can see traffic) ────────────
+    # ── 8. Parse rules ────────────────────────────────────────────────────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
     parse_errors: list[str] = []
     for raw in rule_texts:
@@ -442,8 +450,11 @@ def run_simulation(
             parse_errors.append(raw)
 
     results: list[RuleMatchResult] = []
+    actual_mode = mode
+    suricata_fallback = False
+
     if not ids_visible:
-        # IDS not on path — produce blind results so the UI can explain why
+        # IDS not on path — produce blind results regardless of mode
         no_ids_in_topology = not any(
             n.get("data", {}).get("deviceType") == "ids"
             for n in topology.get("nodes", [])
@@ -463,28 +474,33 @@ def run_simulation(
                 explanation="IDS had no visibility into this traffic — rule was not evaluated.",
                 why_not=blind_why,
             ))
-    else:
-        for raw, pr in parsed_rules:
-            result = _evaluate_rule(pr, packets, home_ips, external_ips, scenario_id)
-            results.append(result)
+        # parse errors still get reported
+        results.extend(_parse_error_results(parse_errors))
 
-    # Append results for rules that couldn't be parsed at all
-    for raw in parse_errors:
-        # Try to extract a sid/msg hint for display
-        sid_hint  = (re.search(r'\bsid\s*:\s*(\d+)', raw) or re.search(r'', '')).group(1) if re.search(r'\bsid\s*:\s*(\d+)', raw) else '?'
-        msg_hint  = re.search(r'\bmsg\s*:\s*"([^"]+)"', raw)
-        label = msg_hint.group(1) if msg_hint else raw[:60].strip()
-        results.append(RuleMatchResult(
-            rule_sid=sid_hint,
-            rule_msg=label,
-            fired=False,
-            explanation=(
-                "This rule could not be parsed — it contains a syntax error. "
-                "Suricata would reject it on startup. "
-                "Open the IDS node panel and fix the rule syntax."
-            ),
-            why_not="Rule syntax is invalid: check action, header format, and that sid/msg keywords are present.",
-        ))
+    elif mode == "suricata":
+        # ── Real Suricata via Docker ──────────────────────────────────────────
+        try:
+            from app.simulation.pcap_builder import build_pcap
+            from app.simulation.suricata_runner import run_suricata
+            from app.simulation.suricata_mapper import map_alerts
+
+            pcap_bytes = build_pcap(packets)
+            alerts = run_suricata(pcap_bytes, rule_texts)
+            # map_alerts handles both fired rules and parse errors in one pass
+            results = map_alerts(alerts, rule_texts)
+        except Exception as exc:
+            log.warning("Suricata mode failed (%s); falling back to Python engine", exc)
+            suricata_fallback = True
+            actual_mode = "python"
+            results = _python_evaluate(
+                parsed_rules, parse_errors, packets, home_ips, external_ips, scenario_id
+            )
+
+    else:
+        # ── Educational simulation (Python engine) ────────────────────────────
+        results = _python_evaluate(
+            parsed_rules, parse_errors, packets, home_ips, external_ips, scenario_id
+        )
 
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
@@ -537,6 +553,11 @@ def run_simulation(
             f"targeting {primary_target}. IDS: {', '.join(ids_node_labels)}."
         )
 
+    if suricata_fallback:
+        summary = (
+            "[Fallback: Docker unavailable — results from Educational Simulation] " + summary
+        )
+
     return SimulationResult(
         scenario=scenario_id,
         total_packets=len(packets),
@@ -553,7 +574,52 @@ def run_simulation(
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
         timeline=timeline,
+        mode=actual_mode,
+        suricata_fallback=suricata_fallback,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule evaluation helpers (shared by both modes)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _python_evaluate(
+    parsed_rules: list[tuple[str, ParsedRule]],
+    parse_errors: list[str],
+    packets: list[SimPacket],
+    home_ips: list[str],
+    ext_ips: list[str],
+    scenario_id: str,
+) -> list[RuleMatchResult]:
+    """Run the Python-based rule evaluation and return results for all rules."""
+    results: list[RuleMatchResult] = []
+    for raw, pr in parsed_rules:
+        results.append(_evaluate_rule(pr, packets, home_ips, ext_ips, scenario_id))
+    results.extend(_parse_error_results(parse_errors))
+    return results
+
+
+def _parse_error_results(parse_errors: list[str]) -> list[RuleMatchResult]:
+    """Build RuleMatchResult entries for rules that failed to parse."""
+    results: list[RuleMatchResult] = []
+    for raw in parse_errors:
+        sid_hint = re.search(r'\bsid\s*:\s*(\d+)', raw)
+        msg_hint = re.search(r'\bmsg\s*:\s*"([^"]+)"', raw)
+        results.append(RuleMatchResult(
+            rule_sid=sid_hint.group(1) if sid_hint else "?",
+            rule_msg=msg_hint.group(1) if msg_hint else raw[:60].strip(),
+            fired=False,
+            explanation=(
+                "This rule could not be parsed — it contains a syntax error. "
+                "Suricata would reject it on startup. "
+                "Open the IDS node panel and fix the rule syntax."
+            ),
+            why_not=(
+                "Rule syntax is invalid: check action, header format, "
+                "and that sid/msg keywords are present."
+            ),
+        ))
+    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────

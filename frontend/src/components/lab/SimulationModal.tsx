@@ -1,12 +1,13 @@
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect, useEffect } from 'react'
 import {
   X, Play, ChevronDown, ChevronRight, ShieldCheck, ShieldOff,
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
-  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft,
+  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft, Server, FlaskConical,
 } from 'lucide-react'
 import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
-import { runSimulation } from '../../api/simulation'
+import { runSimulation, checkStatus } from '../../api/simulation'
+import type { DockerStatus } from '../../api/simulation'
 import type {
   ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry, SimulationRun,
 } from '../../types/lab'
@@ -201,6 +202,21 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
   return (
     <div className="space-y-4">
 
+      {/* Fallback warning — shown when Real Suricata was requested but Docker was unavailable */}
+      {result.suricata_fallback && (
+        <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl border border-amber-700/40 bg-amber-950/15">
+          <AlertTriangle size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-semibold text-amber-300">Docker unavailable — approximate results</p>
+            <p className="text-[11px] text-amber-300/70 mt-0.5 leading-relaxed">
+              Real Suricata mode was requested but Docker could not be reached.
+              Results below are from the Educational Simulation engine and may differ from real Suricata.
+              Start Docker Desktop and re-run for production-accurate detection.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Verdict banner */}
       <div className={`rounded-xl border p-4 flex items-start gap-3 ${verdictColor}`}>
         {verdictIcon}
@@ -285,6 +301,22 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
             <span className="text-[11px] font-mono text-blue-400 truncate">{result.target_ips.join(', ')}</span>
           </div>
         )}
+        <div className="flex items-center gap-2 col-span-2">
+          <span className="text-[10px] text-gray-600 uppercase tracking-wide w-20 flex-shrink-0">Engine</span>
+          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+            result.mode === 'suricata' && !result.suricata_fallback
+              ? 'bg-green-900/50 text-green-300'
+              : result.suricata_fallback
+                ? 'bg-amber-900/40 text-amber-300'
+                : 'bg-indigo-900/30 text-indigo-300'
+          }`}>
+            {result.mode === 'suricata' && !result.suricata_fallback
+              ? 'Real Suricata'
+              : result.suricata_fallback
+                ? 'Educational Sim (fallback)'
+                : 'Educational Sim'}
+          </span>
+        </div>
       </div>
     </div>
   )
@@ -561,6 +593,8 @@ function DetectionTab({ result }: { result: SimulationResult }) {
   const [learningVisible, setLearningVisible] = useState(
     () => localStorage.getItem(LEARNING_DISMISSED_KEY) !== '1'
   )
+  const isSuricata   = result.mode === 'suricata' && !result.suricata_fallback
+  const isFallback   = result.suricata_fallback === true
 
   function dismissLearning() {
     localStorage.setItem(LEARNING_DISMISSED_KEY, '1')
@@ -569,14 +603,32 @@ function DetectionTab({ result }: { result: SimulationResult }) {
 
   return (
     <div className="space-y-3">
-      {/* Learning Mode notice — dismissible */}
-      {learningVisible && (
+      {/* Mode badge — changes based on which engine produced the results */}
+      {isSuricata ? (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-950/20 border border-green-800/20 text-[11px] text-green-300/80">
+          <FlaskConical size={12} className="flex-shrink-0 text-green-400" />
+          <span className="flex-1">
+            <span className="font-semibold text-green-300">Real Suricata</span>
+            {' '}— results come directly from a Suricata process running in Docker.
+            These are production-accurate: if a rule fires here, it fires on a real sensor.
+          </span>
+        </div>
+      ) : isFallback ? (
+        <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-950/15 border border-amber-800/20 text-[11px] text-amber-300/80">
+          <AlertTriangle size={12} className="flex-shrink-0 mt-0.5 text-amber-400" />
+          <span className="flex-1">
+            <span className="font-semibold text-amber-300">Fell back to Educational Sim</span>
+            {' '}— Docker was unavailable when this run executed. Results are approximate.
+            Start Docker Desktop and re-run for definitive detection results.
+          </span>
+        </div>
+      ) : learningVisible && (
         <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-indigo-950/20 border border-indigo-800/20 text-[11px] text-indigo-300/80">
           <Info size={12} className="flex-shrink-0 mt-0.5 text-indigo-400/70" />
           <span className="flex-1">
-            <span className="font-semibold text-indigo-300">Learning Mode</span>
-            {' '}— rule evaluation is a simplified educational simulation. Most keywords are supported,
-            but results may differ from real Suricata. Use this to learn detection logic, not for production.
+            <span className="font-semibold text-indigo-300">Educational Sim</span>
+            {' '}— rule evaluation is a simplified simulation. Most keywords are supported,
+            but results may differ from real Suricata. Switch to Real Suricata mode for production accuracy.
           </span>
           <button
             onClick={dismissLearning}
@@ -737,16 +789,16 @@ function RuleResultCard({
                   <div key={i} className="bg-gray-900/60 rounded-lg px-3 py-2">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-[10px] font-mono text-indigo-400 bg-indigo-900/30 px-1.5 py-0.5 rounded">
-                        {pkt.protocol.toUpperCase()}
+                        {(pkt.protocol ?? '?').toUpperCase()}
                       </span>
                       <span className="text-[10px] font-mono text-gray-400">
-                        {pkt.src_ip}:{pkt.src_port} → {pkt.dst_ip}:{pkt.dst_port}
+                        {pkt.src ?? `${pkt.src_ip}:${pkt.src_port}`} → {pkt.dst ?? `${pkt.dst_ip}:${pkt.dst_port}`}
                       </span>
                     </div>
                     <p className="text-[10px] text-gray-500">{pkt.description}</p>
-                    {pkt.payload && (
+                    {(pkt.payload_preview ?? pkt.payload) && (
                       <pre className="text-[10px] text-gray-600 font-mono mt-1 truncate">
-                        {pkt.payload.slice(0, 80)}
+                        {(pkt.payload_preview ?? pkt.payload ?? '').slice(0, 80)}
                       </pre>
                     )}
                   </div>
@@ -761,6 +813,97 @@ function RuleResultCard({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Docker install instructions (collapsible) ────────────────────────────────
+
+function DockerInstallInstructions() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 text-[11px] text-amber-400/70 hover:text-amber-300 transition-colors"
+      >
+        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        How to install Docker Desktop
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 pl-4 border-l border-amber-800/30 text-[11px] text-gray-400 leading-relaxed">
+          <p>
+            <span className="font-semibold text-gray-300">Windows / macOS — </span>
+            Download and install Docker Desktop from{' '}
+            <span className="font-mono text-amber-300/80">docker.com/products/docker-desktop</span>,
+            then launch it. The Docker icon will appear in your taskbar/menu bar when it's running.
+          </p>
+          <p>
+            <span className="font-semibold text-gray-300">Linux — </span>
+            <span className="font-mono text-amber-300/80">sudo apt install docker.io && sudo systemctl start docker</span>
+            {' '}(Ubuntu/Debian), or follow the official docs for your distro.
+          </p>
+          <p className="text-gray-500">
+            After Docker is running, you'll also need to pull the Suricata image once:{' '}
+            <span className="font-mono text-gray-400">docker pull jasonish/suricata:latest</span>{' '}
+            (~250 MB one-time download).
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Docker status panel (shown when Real Suricata is selected but not ready) ─
+
+function DockerStatusPanel({ status, loading }: { status: DockerStatus | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/40 text-[11px] text-gray-500">
+        <Loader2 size={11} className="animate-spin" />
+        Checking Docker availability…
+      </div>
+    )
+  }
+  if (!status) {
+    return (
+      <div className="px-3 py-2.5 rounded-lg border border-amber-700/30 bg-amber-950/10 text-[11px] text-amber-300/70 leading-relaxed">
+        <span className="font-semibold text-amber-300">Docker status unknown</span> — the backend may not be running.
+        Simulation will use Educational (approximate) results as fallback.
+      </div>
+    )
+  }
+  if (status.ready) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-green-700/30 bg-green-950/10 text-[11px] text-green-300">
+        <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
+        Docker ready · <span className="font-mono text-green-400/80">{status.image}</span>
+      </div>
+    )
+  }
+  // Not ready
+  const isNotRunning = status.state === 'docker_unavailable'
+  const isNotPulled  = status.state === 'image_not_pulled'
+  return (
+    <div className="px-3 py-2.5 rounded-xl border border-amber-700/30 bg-amber-950/10 space-y-1.5">
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={13} className="text-amber-400 flex-shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <p className="text-[11px] font-semibold text-amber-300">
+            {isNotRunning ? 'Docker not running' : 'First run will download Suricata (~250 MB)'}
+          </p>
+          {status.error && (
+            <p className="text-[10px] text-amber-300/60 mt-0.5 leading-relaxed">{status.error}</p>
+          )}
+          {isNotRunning && (
+            <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+              Simulation will still run using the Educational (approximate) engine as a fallback.
+              Switch to Educational Sim to skip this warning.
+            </p>
+          )}
+        </div>
+      </div>
+      {isNotRunning && <DockerInstallInstructions />}
     </div>
   )
 }
@@ -823,12 +966,24 @@ export default function SimulationModal({
 }: Props) {
   const [scenarioId, setScenarioId] = useState(SCENARIOS[0].id)
   const [packetRate, setPacketRate] = useState(5)
+  const [simMode, setSimMode] = useState<'python' | 'suricata'>('python')
+  const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null)
+  const [dockerStatusLoading, setDockerStatusLoading] = useState(true)
   const [result, setResult] = useState<SimulationResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [minimized, setMinimized] = useState(false)
   const [activeTab, setActiveTab] = useState<ResultTab>('overview')
   const [showHistory, setShowHistory] = useState(false)
+
+  // Fetch Docker / Suricata availability on mount
+  useEffect(() => {
+    setDockerStatusLoading(true)
+    checkStatus()
+      .then(setDockerStatus)
+      .catch(() => setDockerStatus(null))
+      .finally(() => setDockerStatusLoading(false))
+  }, [])
 
   // ── Modal resize (corner) ────────────────────────────────────────────────
   const [modalW, setModalW] = useState(672)
@@ -893,7 +1048,7 @@ export default function SimulationModal({
     try {
       const ruleTexts = activeRules.map((r) => r.customText ?? r.entry.rule)
       const topology = { nodes, edges }
-      const res = await runSimulation(projectId, scenarioId, ruleTexts, topology)
+      const res = await runSimulation(projectId, scenarioId, ruleTexts, topology, simMode)
       // Lock config section height before results appear so they get the remaining space
       if (configH === null && configSectionRef.current) {
         setConfigH(configSectionRef.current.offsetHeight)
@@ -970,7 +1125,7 @@ export default function SimulationModal({
     <div className="fixed inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center z-50 p-4">
       <div
         className="bg-gray-900 border border-gray-700 rounded-2xl flex flex-col shadow-2xl relative overflow-hidden"
-        style={{ width: modalW, height: modalH, maxWidth: '95vw', maxHeight: '95vh' }}
+        style={{ width: modalW, height: result || showHistory ? modalH : 'auto', maxWidth: '95vw', maxHeight: '95vh' }}
       >
 
         {/* Header */}
@@ -1049,11 +1204,11 @@ export default function SimulationModal({
           </div>
         )}
 
-        {/* Config section — natural height until user drags the split handle */}
+        {/* Config section — scrollable, capped at 55% of modal height until user drags the split handle */}
         {!showHistory && <div
           ref={configSectionRef}
-          className={`px-6 py-4 space-y-4 flex-shrink-0 ${configH !== null ? 'overflow-y-auto' : ''}`}
-          style={configH !== null ? { height: configH } : {}}
+          className="px-6 py-4 space-y-4 flex-shrink-0 overflow-y-auto"
+          style={configH !== null ? { height: configH } : { maxHeight: Math.round(modalH * 0.55) }}
         >
 
           {topologyError && (
@@ -1109,6 +1264,46 @@ export default function SimulationModal({
             </div>
           </div>
 
+          {/* Simulation mode toggle */}
+          <div className="space-y-2">
+            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wide">
+              Simulation Mode
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSimMode('python')}
+                className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left transition ${
+                  simMode === 'python'
+                    ? 'border-indigo-500 bg-indigo-900/30 text-white'
+                    : 'border-gray-700/50 bg-gray-800/30 text-gray-400 hover:border-gray-600'
+                }`}
+              >
+                <Shield size={13} className={simMode === 'python' ? 'text-indigo-400' : 'text-gray-600'} />
+                <div>
+                  <p className="text-xs font-semibold">Educational Sim</p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Approximate · detailed diagnostics</p>
+                </div>
+              </button>
+              <button
+                onClick={() => setSimMode('suricata')}
+                className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left transition ${
+                  simMode === 'suricata'
+                    ? 'border-green-600/60 bg-green-950/20 text-white'
+                    : 'border-gray-700/50 bg-gray-800/30 text-gray-400 hover:border-gray-600'
+                }`}
+              >
+                <FlaskConical size={13} className={simMode === 'suricata' ? 'text-green-400' : 'text-gray-600'} />
+                <div>
+                  <p className="text-xs font-semibold">Real Suricata</p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Production-accurate · Docker</p>
+                </div>
+              </button>
+            </div>
+            {simMode === 'suricata' && (
+              <DockerStatusPanel status={dockerStatus} loading={dockerStatusLoading} />
+            )}
+          </div>
+
           {error && (
             <p className="text-xs text-red-400 bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">{error}</p>
           )}
@@ -1119,7 +1314,12 @@ export default function SimulationModal({
             className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition"
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-            {loading ? 'Simulating…' : 'Run simulation'}
+            {loading
+              ? simMode === 'suricata' && dockerStatus && !dockerStatus.image_available
+                ? 'Pulling Suricata image…'
+                : 'Simulating…'
+              : 'Run simulation'
+            }
           </button>
 
           {activeRules.length === 0 && !topologyError && (
@@ -1129,8 +1329,8 @@ export default function SimulationModal({
           )}
         </div>}
 
-        {/* Horizontal split drag strip + results — hidden when history is open */}
-        {!showHistory && (
+        {/* Horizontal split drag strip + results — only shown once results exist */}
+        {!showHistory && result && (
           <>
             <div
               className="h-1.5 flex-shrink-0 cursor-ns-resize flex items-center justify-center group bg-gray-800/60 hover:bg-indigo-950/40 transition-colors border-y border-gray-800/80"

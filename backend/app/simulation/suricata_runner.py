@@ -114,8 +114,8 @@ def get_status() -> DockerStatus:
             docker_running=True,
             image_available=False,
             error=(
-                f"Suricata image '{SURICATA_IMAGE}' is not pulled yet. "
-                f"Run once:  docker pull {SURICATA_IMAGE}"
+                f"Image '{SURICATA_IMAGE}' not yet downloaded (~250 MB). "
+                f"It will be pulled automatically on your first Real Suricata run."
             ),
         )
     except Exception as exc:
@@ -154,6 +154,14 @@ def run_suricata(pcap_bytes: bytes, rule_texts: list[str]) -> list[dict]:
 
     rules_bytes = _build_rules_file(rule_texts)
     client = docker.from_env()
+
+    # ── Auto-pull image on first use ──────────────────────────────────────────
+    try:
+        client.images.get(SURICATA_IMAGE)
+    except docker.errors.ImageNotFound:
+        log.info("Image '%s' not found locally — pulling (~250 MB, first-time only)…", SURICATA_IMAGE)
+        client.images.pull(SURICATA_IMAGE)
+        log.info("Image pull complete.")
 
     # ── Create a stopped container ────────────────────────────────────────────
     container = client.containers.create(

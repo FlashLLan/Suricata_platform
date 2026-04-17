@@ -7,6 +7,7 @@ from typing import Any, Optional
 from app import models, auth
 from app.database import get_db
 from app.simulation.engine import run_simulation, SimulationValidationError
+from app.simulation.suricata_runner import get_status as _get_docker_status
 
 router = APIRouter(prefix="/api/simulate", tags=["simulation"])
 
@@ -16,6 +17,7 @@ class SimulateRequest(BaseModel):
     scenario_id: str
     rule_texts: list[str]
     topology: Optional[dict[str, Any]] = None   # current canvas state (preferred)
+    mode: str = "python"                         # "python" | "suricata"
 
 
 @router.post("")
@@ -41,7 +43,7 @@ def simulate(
             topology = {}
 
     try:
-        result = run_simulation(req.scenario_id, req.rule_texts, topology)
+        result = run_simulation(req.scenario_id, req.rule_texts, topology, mode=req.mode)
     except SimulationValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -60,6 +62,8 @@ def simulate(
         "ids_visible": result.ids_visible,
         "ids_node_labels": result.ids_node_labels,
         "timeline": result.timeline,
+        "mode": result.mode,
+        "suricata_fallback": result.suricata_fallback,
         "results": [
             {
                 "rule_sid": r.rule_sid,
@@ -72,3 +76,18 @@ def simulate(
             for r in result.results
         ],
     }
+
+
+@router.get("/status")
+def simulation_status(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Return Docker + Suricata image availability for the current host.
+
+    States returned in ``state``:
+      "docker_unavailable"  — Docker daemon not running
+      "image_not_pulled"    — Docker up, jasonish/suricata not downloaded yet
+      "ready"               — Real Suricata mode fully available
+    """
+    return _get_docker_status().as_dict()

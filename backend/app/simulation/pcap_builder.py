@@ -42,8 +42,10 @@ def build_pcap(packets: list[SimPacket]) -> bytes:
     writer = PcapWriter(buf, nano=False, sync=True)
     for pkt in scapy_pkts:
         writer.write(pkt)
+    writer.flush()
+    result = buf.getvalue()
     writer.close()
-    return buf.getvalue()
+    return result
 
 
 # ---------------------------------------------------------------------------

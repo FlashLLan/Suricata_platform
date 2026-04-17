@@ -150,6 +150,9 @@ export interface SimulationResult {
   ids_node_labels?: string[]      // labels of IDS nodes that observed the traffic
   // Event timeline
   timeline?: TimelineEvent[]
+  // Simulation mode
+  mode?: 'python' | 'suricata'
+  suricata_fallback?: boolean     // suricata was requested but fell back to python
 }
 
 export interface ActiveRule {
