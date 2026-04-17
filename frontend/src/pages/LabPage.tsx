@@ -20,7 +20,7 @@ import SimulationModal from '../components/lab/SimulationModal'
 import ExportModal from '../components/lab/ExportModal'
 import AnimatedPacketEdge from '../components/lab/AnimatedPacketEdge'
 
-import type { DeviceData, DeviceType, ActiveRule, RuleEntry } from '../types/lab'
+import type { DeviceData, DeviceType, ActiveRule, RuleEntry, SimulationRun } from '../types/lab'
 import { PREDEFINED_RULES } from '../data/rules'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -216,6 +216,8 @@ export default function LabPage() {
   const [activeRules, setActiveRules] = useState<ActiveRule[]>([])
   const [rulesOpen, setRulesOpen] = useState(true)
   const [showSim, setShowSim] = useState(false)
+  const [simHistory, setSimHistory] = useState<SimulationRun[]>([])
+  const simHistoryRef = useRef<SimulationRun[]>([])
   const [showExport, setShowExport] = useState(false)
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
   // Edge IDs that are animating during simulation (to restore them afterward)
@@ -452,6 +454,13 @@ export default function LabPage() {
             setActiveRules(loaded)
           }
         } catch { /* ignore */ }
+        try {
+          const sim = JSON.parse(p.simulation_json || '{}')
+          if (Array.isArray(sim.runs)) {
+            setSimHistory(sim.runs)
+            simHistoryRef.current = sim.runs
+          }
+        } catch { /* ignore */ }
         // Mark load complete — dirty tracking starts from here
         setTimeout(() => { isLoaded.current = true }, 0)
       })
@@ -465,6 +474,7 @@ export default function LabPage() {
   const activeRulesRef = useRef(activeRules)
   useEffect(() => { projectRef.current = project }, [project])
   useEffect(() => { activeRulesRef.current = activeRules }, [activeRules])
+  useEffect(() => { simHistoryRef.current = simHistory }, [simHistory])
 
   async function doSave() {
     const p = projectRef.current
@@ -486,6 +496,17 @@ export default function LabPage() {
     if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
     await doSave()
   }
+
+  const handleRunSaved = useCallback(async (run: SimulationRun) => {
+    const updated = [run, ...simHistoryRef.current].slice(0, 50)
+    setSimHistory(updated)
+    simHistoryRef.current = updated
+    if (projectRef.current) {
+      await updateProject(projectRef.current.id, {
+        simulation_json: JSON.stringify({ runs: updated }),
+      }).catch(() => {})
+    }
+  }, [])
 
   // ── Rename project ────────────────────────────────────────────────────────
   function startRename() {
@@ -848,6 +869,8 @@ export default function LabPage() {
           onClose={() => setShowSim(false)}
           onSimulationStart={handleSimulationStart}
           onSimulationEnd={handleSimulationEnd}
+          simHistory={simHistory}
+          onRunSaved={handleRunSaved}
         />
       )}
     </div>

@@ -156,3 +156,15 @@ export interface ActiveRule {
   entry: RuleEntry
   customText?: string   // override rule text (for custom rules)
 }
+
+export interface SimulationRun {
+  id: string
+  timestamp: string                             // ISO 8601
+  scenario_id: string
+  scenario_name: string
+  packet_rate: number
+  rule_count: number
+  outcome: 'blocked' | 'detected' | 'undetected'
+  triggered_count: number
+  result: SimulationResult
+}

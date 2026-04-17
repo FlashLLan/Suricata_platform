@@ -3,12 +3,12 @@ import {
   X, Play, ChevronDown, ChevronRight, ShieldCheck, ShieldOff,
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
-  Minus, XCircle, ZapOff, Info,
+  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft,
 } from 'lucide-react'
 import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
 import { runSimulation } from '../../api/simulation'
 import type {
-  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry,
+  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry, SimulationRun,
 } from '../../types/lab'
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData } from '../../types/lab'
@@ -23,6 +23,8 @@ interface Props {
   onClose: () => void
   onSimulationStart: (packetRate: number, attackPath: string[][]) => void
   onSimulationEnd: () => void
+  simHistory?: SimulationRun[]
+  onRunSaved?: (run: SimulationRun) => void
 }
 
 type ResultTab = 'overview' | 'path' | 'defenses' | 'detection'
@@ -763,6 +765,49 @@ function RuleResultCard({
   )
 }
 
+// ─── History helpers ──────────────────────────────────────────────────────────
+
+function formatTimeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'Just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
+function HistoryRunCard({ run, onClick }: { run: SimulationRun; onClick: () => void }) {
+  const outcomeStyle =
+    run.outcome === 'blocked'
+      ? { border: 'border-green-700/40 bg-green-950/20',   badge: 'bg-green-900/60 text-green-300',   label: 'BLOCKED',    Icon: CheckCircle2,  iconClass: 'text-green-400' }
+    : run.outcome === 'detected'
+      ? { border: 'border-yellow-700/40 bg-yellow-950/10', badge: 'bg-yellow-900/40 text-yellow-300', label: 'DETECTED',   Icon: AlertTriangle, iconClass: 'text-yellow-400' }
+      : { border: 'border-red-700/30 bg-red-950/10',       badge: 'bg-red-900/50 text-red-400',       label: 'UNDETECTED', Icon: ShieldOff,     iconClass: 'text-red-400' }
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left hover:bg-white/5 transition ${outcomeStyle.border}`}
+    >
+      <outcomeStyle.Icon size={16} className={`flex-shrink-0 ${outcomeStyle.iconClass}`} />
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-semibold text-gray-300 truncate">{run.scenario_name}</p>
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          {run.triggered_count} of {run.rule_count} rule{run.rule_count !== 1 ? 's' : ''} fired · {run.packet_rate} pps
+        </p>
+      </div>
+      <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${outcomeStyle.badge}`}>
+          {outcomeStyle.label}
+        </span>
+        <span className="text-[10px] text-gray-600">{formatTimeAgo(run.timestamp)}</span>
+      </div>
+    </button>
+  )
+}
+
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
 export default function SimulationModal({
@@ -773,6 +818,8 @@ export default function SimulationModal({
   onClose,
   onSimulationStart,
   onSimulationEnd,
+  simHistory,
+  onRunSaved,
 }: Props) {
   const [scenarioId, setScenarioId] = useState(SCENARIOS[0].id)
   const [packetRate, setPacketRate] = useState(5)
@@ -781,6 +828,7 @@ export default function SimulationModal({
   const [error, setError] = useState('')
   const [minimized, setMinimized] = useState(false)
   const [activeTab, setActiveTab] = useState<ResultTab>('overview')
+  const [showHistory, setShowHistory] = useState(false)
 
   // ── Modal resize (corner) ────────────────────────────────────────────────
   const [modalW, setModalW] = useState(672)
@@ -853,6 +901,19 @@ export default function SimulationModal({
       setResult(res)
       setActiveTab('overview')
 
+      const run: SimulationRun = {
+        id: `run-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        scenario_id: scenarioId,
+        scenario_name: selectedScenario.name,
+        packet_rate: packetRate,
+        rule_count: activeRules.length,
+        outcome: res.attack_blocked ? 'blocked' : res.triggered_count > 0 ? 'detected' : 'undetected',
+        triggered_count: res.triggered_count,
+        result: res,
+      }
+      onRunSaved?.(run)
+
       if (res.attack_path && res.attack_path.length > 0) {
         onSimulationStart(packetRate, res.attack_path)
       }
@@ -920,6 +981,18 @@ export default function SimulationModal({
           </div>
           <div className="flex items-center gap-1">
             <button
+              onClick={() => setShowHistory(h => !h)}
+              className={`relative text-gray-500 hover:text-white transition p-1.5 rounded-lg hover:bg-gray-800 ${showHistory ? 'text-indigo-400 bg-indigo-950/40' : ''}`}
+              title="Run history"
+            >
+              <Clock size={15} />
+              {(simHistory?.length ?? 0) > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 text-[8px] font-bold bg-indigo-600 text-white rounded-full w-3.5 h-3.5 flex items-center justify-center leading-none">
+                  {(simHistory!.length) > 9 ? '9+' : simHistory!.length}
+                </span>
+              )}
+            </button>
+            <button
               onClick={() => setMinimized(true)}
               className="text-gray-500 hover:text-white transition p-1.5 rounded-lg hover:bg-gray-800"
               title="Minimize — watch the canvas"
@@ -932,8 +1005,52 @@ export default function SimulationModal({
           </div>
         </div>
 
+        {/* History panel — replaces config+results when open */}
+        {showHistory && (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-800 flex-shrink-0">
+              <button
+                onClick={() => setShowHistory(false)}
+                className="text-gray-500 hover:text-white transition p-1 rounded-lg hover:bg-gray-800"
+                title="Back"
+              >
+                <ArrowLeft size={14} />
+              </button>
+              <p className="text-sm font-semibold text-white">Run History</p>
+              <span className="text-xs text-gray-600">
+                {(simHistory?.length ?? 0)} run{(simHistory?.length ?? 0) !== 1 ? 's' : ''}
+              </span>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
+              {(simHistory?.length ?? 0) === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center gap-3">
+                  <Clock size={28} className="text-gray-700" />
+                  <div>
+                    <p className="text-sm font-semibold text-gray-500">No runs yet</p>
+                    <p className="text-[11px] text-gray-600 mt-1 max-w-xs leading-relaxed">
+                      Run a simulation and your results will be saved here automatically.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                (simHistory ?? []).map(run => (
+                  <HistoryRunCard
+                    key={run.id}
+                    run={run}
+                    onClick={() => {
+                      setResult(run.result)
+                      setActiveTab('overview')
+                      setShowHistory(false)
+                    }}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Config section — natural height until user drags the split handle */}
-        <div
+        {!showHistory && <div
           ref={configSectionRef}
           className={`px-6 py-4 space-y-4 flex-shrink-0 ${configH !== null ? 'overflow-y-auto' : ''}`}
           style={configH !== null ? { height: configH } : {}}
@@ -1010,26 +1127,29 @@ export default function SimulationModal({
               No Suricata rules loaded — the simulation will run but nothing will be detected.
             </p>
           )}
-        </div>
+        </div>}
 
-        {/* Horizontal split drag strip — always visible, separates config from results */}
-        <div
-          className="h-1.5 flex-shrink-0 cursor-ns-resize flex items-center justify-center group bg-gray-800/60 hover:bg-indigo-950/40 transition-colors border-y border-gray-800/80"
-          onMouseDown={onSplitMouseDown}
-        >
-          <div className="w-8 h-0.5 rounded-full bg-gray-700 group-hover:bg-indigo-500 transition-colors" />
-        </div>
-
-        {/* Results — tab layout */}
-        {result && (
+        {/* Horizontal split drag strip + results — hidden when history is open */}
+        {!showHistory && (
           <>
-            <ResultTabBar active={activeTab} onChange={setActiveTab} result={result} />
-            <div className="flex-1 overflow-y-auto px-6 py-4">
-              {activeTab === 'overview'  && <OverviewTab result={result} packetRate={packetRate} />}
-              {activeTab === 'path'      && <AttackPathTab result={result} />}
-              {activeTab === 'defenses'  && <DefensesTab result={result} />}
-              {activeTab === 'detection' && <DetectionTab result={result} />}
+            <div
+              className="h-1.5 flex-shrink-0 cursor-ns-resize flex items-center justify-center group bg-gray-800/60 hover:bg-indigo-950/40 transition-colors border-y border-gray-800/80"
+              onMouseDown={onSplitMouseDown}
+            >
+              <div className="w-8 h-0.5 rounded-full bg-gray-700 group-hover:bg-indigo-500 transition-colors" />
             </div>
+
+            {result && (
+              <>
+                <ResultTabBar active={activeTab} onChange={setActiveTab} result={result} />
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  {activeTab === 'overview'  && <OverviewTab result={result} packetRate={packetRate} />}
+                  {activeTab === 'path'      && <AttackPathTab result={result} />}
+                  {activeTab === 'defenses'  && <DefensesTab result={result} />}
+                  {activeTab === 'detection' && <DetectionTab result={result} />}
+                </div>
+              </>
+            )}
           </>
         )}
 
