@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listProjects, createProject, deleteProject, updateProject, type ProjectSummary } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
+import { LAB_TEMPLATES, type LabTemplate } from '../data/templates'
 
 function timeAgo(dateStr: string): string {
   // Backend returns UTC timestamps without the 'Z' suffix; append it so the
@@ -25,6 +26,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [showModal, setShowModal] = useState(false)
+  const [modalStep, setModalStep] = useState<'template' | 'details'>('template')
+  const [selectedTemplate, setSelectedTemplate] = useState<LabTemplate>(LAB_TEMPLATES[0])
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [deleteId, setDeleteId] = useState<number | null>(null)
@@ -37,15 +40,30 @@ export default function DashboardPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  function openNewProjectModal() {
+    setModalStep('template')
+    setSelectedTemplate(LAB_TEMPLATES[0])
+    setNewName('')
+    setNewDesc('')
+    setShowModal(true)
+  }
+
+  function handleSelectTemplate(tpl: LabTemplate) {
+    setSelectedTemplate(tpl)
+    setNewName(tpl.id === 'blank' ? '' : tpl.name)
+    setModalStep('details')
+  }
+
   async function handleCreate() {
     if (!newName.trim()) return
     setCreating(true)
     try {
-      const p = await createProject(newName.trim(), newDesc.trim() || undefined)
+      const tpl = selectedTemplate
+      const topology_json = tpl.topology ? JSON.stringify(tpl.topology) : undefined
+      const rules_json = tpl.ruleSids.length ? JSON.stringify(tpl.ruleSids) : undefined
+      const p = await createProject(newName.trim(), newDesc.trim() || undefined, topology_json, rules_json)
       setProjects((prev) => [p, ...prev])
       setShowModal(false)
-      setNewName('')
-      setNewDesc('')
       navigate(`/lab/${p.id}`)
     } finally {
       setCreating(false)
@@ -103,7 +121,7 @@ export default function DashboardPage() {
             </p>
           </div>
           <button
-            onClick={() => setShowModal(true)}
+            onClick={openNewProjectModal}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -127,7 +145,7 @@ export default function DashboardPage() {
             <p className="text-white font-medium mb-1">No projects yet</p>
             <p className="text-gray-400 text-sm mb-5">Create your first simulation lab to get started.</p>
             <button
-              onClick={() => setShowModal(true)}
+              onClick={openNewProjectModal}
               className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition"
             >
               Create project
@@ -184,52 +202,123 @@ export default function DashboardPage() {
         )}
       </main>
 
-      {/* Create modal */}
+      {/* Create modal — 2-step: template picker → project details */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-lg font-bold text-white mb-5">New project</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">Name</label>
-                <input
-                  autoFocus
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
-                  placeholder="My first lab"
-                />
+          {modalStep === 'template' ? (
+            /* ── Step 1: Template picker ─────────────────────────────────── */
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl shadow-2xl">
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h2 className="text-lg font-bold text-white">New project</h2>
+                  <p className="text-gray-400 text-sm mt-0.5">Choose a template to get started</p>
+                </div>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="text-gray-500 hover:text-gray-300 transition p-1"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                  Description <span className="text-gray-500">(optional)</span>
-                </label>
-                <textarea
-                  value={newDesc}
-                  onChange={(e) => setNewDesc(e.target.value)}
-                  rows={3}
-                  className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition resize-none"
-                  placeholder="What are you experimenting with?"
-                />
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {LAB_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    onClick={() => handleSelectTemplate(tpl)}
+                    className="text-left p-4 bg-gray-800 hover:bg-gray-700/80 border border-gray-700 hover:border-indigo-500/60 rounded-xl transition-all group"
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      {tpl.id === 'blank' ? (
+                        <span className="text-base">✦</span>
+                      ) : (
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                          tpl.difficulty === 'beginner'
+                            ? 'bg-green-900/40 text-green-400 border border-green-700/40'
+                            : 'bg-amber-900/40 text-amber-400 border border-amber-700/40'
+                        }`}>
+                          {tpl.difficulty}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm font-semibold text-white group-hover:text-indigo-300 transition leading-tight mb-1.5">
+                      {tpl.name}
+                    </p>
+                    <p className="text-[11px] text-gray-400 leading-relaxed line-clamp-3">
+                      {tpl.description}
+                    </p>
+                    {tpl.ruleSids.length > 0 && (
+                      <p className="text-[10px] text-indigo-400/70 mt-2">
+                        {tpl.ruleSids.length} rule{tpl.ruleSids.length !== 1 ? 's' : ''} pre-loaded
+                      </p>
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => { setShowModal(false); setNewName(''); setNewDesc('') }}
-                className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-lg transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreate}
-                disabled={creating || !newName.trim()}
-                className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition"
-              >
-                {creating ? 'Creating…' : 'Create'}
-              </button>
+          ) : (
+            /* ── Step 2: Project details ─────────────────────────────────── */
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+              <div className="flex items-center gap-3 mb-5">
+                <button
+                  onClick={() => setModalStep('template')}
+                  className="text-gray-500 hover:text-gray-300 transition p-1 -ml-1"
+                  title="Back to templates"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <div>
+                  <h2 className="text-lg font-bold text-white leading-none">New project</h2>
+                  {selectedTemplate.id !== 'blank' && (
+                    <p className="text-xs text-indigo-400 mt-0.5">Template: {selectedTemplate.name}</p>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Name</label>
+                  <input
+                    autoFocus
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                    className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    placeholder="My first lab"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">
+                    Description <span className="text-gray-500">(optional)</span>
+                  </label>
+                  <textarea
+                    value={newDesc}
+                    onChange={(e) => setNewDesc(e.target.value)}
+                    rows={3}
+                    className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition resize-none"
+                    placeholder="What are you experimenting with?"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-lg transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreate}
+                  disabled={creating || !newName.trim()}
+                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition"
+                >
+                  {creating ? 'Creating…' : 'Create'}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

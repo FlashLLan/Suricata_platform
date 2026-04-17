@@ -34,6 +34,8 @@ class TokenData(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    topology_json: Optional[str] = None
+    rules_json: Optional[str] = None
 
 
 class ProjectUpdate(BaseModel):

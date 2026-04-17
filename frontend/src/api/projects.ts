@@ -22,8 +22,13 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   return data
 }
 
-export async function createProject(name: string, description?: string): Promise<Project> {
-  const { data } = await api.post<Project>('/projects', { name, description })
+export async function createProject(
+  name: string,
+  description?: string,
+  topology_json?: string,
+  rules_json?: string,
+): Promise<Project> {
+  const { data } = await api.post<Project>('/projects', { name, description, topology_json, rules_json })
   return data
 }
 

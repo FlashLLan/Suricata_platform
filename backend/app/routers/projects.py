@@ -33,6 +33,8 @@ def create_project(
         user_id=current_user.id,
         name=project_in.name,
         description=project_in.description,
+        topology_json=project_in.topology_json,
+        rules_json=project_in.rules_json,
     )
     db.add(project)
     db.commit()
