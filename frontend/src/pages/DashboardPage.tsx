@@ -207,8 +207,8 @@ export default function DashboardPage() {
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4">
           {modalStep === 'template' ? (
             /* ── Step 1: Template picker ─────────────────────────────────── */
-            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl shadow-2xl">
-              <div className="flex items-center justify-between mb-5">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]">
+              <div className="flex items-center justify-between mb-5 flex-shrink-0">
                 <div>
                   <h2 className="text-lg font-bold text-white">New project</h2>
                   <p className="text-gray-400 text-sm mt-0.5">Choose a template to get started</p>
@@ -222,7 +222,7 @@ export default function DashboardPage() {
                   </svg>
                 </button>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1">
                 {LAB_TEMPLATES.map((tpl) => (
                   <button
                     key={tpl.id}
@@ -236,7 +236,9 @@ export default function DashboardPage() {
                         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
                           tpl.difficulty === 'beginner'
                             ? 'bg-green-900/40 text-green-400 border border-green-700/40'
-                            : 'bg-amber-900/40 text-amber-400 border border-amber-700/40'
+                            : tpl.difficulty === 'intermediate'
+                            ? 'bg-amber-900/40 text-amber-400 border border-amber-700/40'
+                            : 'bg-red-900/40 text-red-400 border border-red-700/40'
                         }`}>
                           {tpl.difficulty}
                         </span>
