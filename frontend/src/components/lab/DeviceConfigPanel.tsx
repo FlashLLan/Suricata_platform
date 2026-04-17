@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, ChevronDown, ChevronRight, Terminal, Plus, CheckCircle2 } from 'lucide-react'
+import { X, ChevronDown, ChevronRight, Terminal, Plus, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Pencil } from 'lucide-react'
 import type { Node } from '@xyflow/react'
-import type { DeviceData, NetworkZone, DeviceType, IPClass } from '../../types/lab'
+import type { DeviceData, NetworkZone, DeviceType, IPClass, RuleCategory, CustomRuleEntry } from '../../types/lab'
 import {
   ATTACK_COMMANDS, ATTACK_CATEGORY_LABELS, ATTACK_CATEGORY_COLORS,
   type AttackCategory,
 } from '../../data/attacks'
+import { PREDEFINED_RULES, CATEGORY_LABELS, CATEGORY_COLORS } from '../../data/rules'
+import AddCustomRuleModal, { getCustomCategoryClasses } from './AddCustomRuleModal'
 import DefensePanel from './DefensePanel'
 
 // ─── IP helpers ───────────────────────────────────────────────────────────────
@@ -213,6 +215,207 @@ function AttackerPanel({
   )
 }
 
+// ── IDS Rules Panel ────────────────────────────────────────────────────────────
+
+function IDSRulesPanel({
+  selected,
+  customRules,
+  onToggle,
+  onAddCustom,
+  onUpdateCustom,
+  onRemoveCustom,
+}: {
+  selected: string[]
+  customRules: CustomRuleEntry[]
+  onToggle: (id: string) => void
+  onAddCustom: (rule: CustomRuleEntry) => void
+  onUpdateCustom: (rule: CustomRuleEntry) => void
+  onRemoveCustom: (id: string) => void
+}) {
+  const [search, setSearch] = useState('')
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [editingRule, setEditingRule] = useState<CustomRuleEntry | null>(null)
+
+  const byCategory = PREDEFINED_RULES.reduce<Record<string, typeof PREDEFINED_RULES>>((acc, r) => {
+    if (!acc[r.category]) acc[r.category] = []
+    acc[r.category].push(r)
+    return acc
+  }, {})
+
+  const filtered = PREDEFINED_RULES.filter(r => {
+    if (!search) return true
+    const q = search.toLowerCase()
+    return r.msg.toLowerCase().includes(q) || r.category.includes(q)
+  })
+  const filteredIds = new Set(filtered.map(r => r.id))
+
+  const totalLoaded = selected.length + customRules.length
+  const invalidCount = customRules.filter(r => !r.isValid).length
+
+  // Group custom rules by category for display
+  const customByCategory = customRules.reduce<Record<string, CustomRuleEntry[]>>((acc, r) => {
+    if (!acc[r.category]) acc[r.category] = []
+    acc[r.category].push(r)
+    return acc
+  }, {})
+
+  return (
+    <>
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 pt-1">
+          <div className="h-px flex-1 bg-gray-800" />
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-indigo-400 flex items-center gap-1">
+            <ShieldCheck size={10} />
+            Loaded Rules
+          </span>
+          <div className="h-px flex-1 bg-gray-800" />
+        </div>
+
+        <p className="text-[10px] text-gray-500 leading-relaxed">
+          Select predefined rules or add your own. Selected rules appear in the Export.
+        </p>
+
+        {totalLoaded > 0 && (
+          <div className="flex items-center gap-2">
+            <p className="text-[10px] text-indigo-400 font-medium">
+              {totalLoaded} rule{totalLoaded !== 1 ? 's' : ''} loaded
+            </p>
+            {invalidCount > 0 && (
+              <span className="flex items-center gap-0.5 text-[10px] text-amber-400">
+                <AlertTriangle size={10} />
+                {invalidCount} with syntax errors
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="pb-0.5">
+          <input
+            className="w-full px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            placeholder="Search rules…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+
+        {/* Predefined rules */}
+        <div className="space-y-2">
+          {(Object.entries(byCategory) as [RuleCategory, typeof PREDEFINED_RULES][]).map(([cat, rules]) => {
+            const visibleRules = rules.filter(r => filteredIds.has(r.id))
+            if (visibleRules.length === 0) return null
+            return (
+              <div key={cat} className="rounded-lg border border-gray-800 overflow-hidden">
+                <div className={`px-2 py-1 text-[10px] font-semibold border-b border-gray-800 ${CATEGORY_COLORS[cat]}`}>
+                  {CATEGORY_LABELS[cat]}
+                </div>
+                {visibleRules.map(rule => {
+                  const isOn = selected.includes(rule.id)
+                  return (
+                    <label
+                      key={rule.id}
+                      className={`flex items-start gap-2 px-2 py-1.5 cursor-pointer border-b border-gray-800/50 last:border-0 hover:bg-gray-800/30 transition ${isOn ? 'bg-indigo-950/20' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isOn}
+                        onChange={() => onToggle(rule.id)}
+                        className="accent-indigo-500 mt-0.5 flex-shrink-0 cursor-pointer"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-[11px] text-gray-300 leading-snug">{rule.msg}</p>
+                        <p className="text-[10px] text-gray-600 font-mono mt-0.5">sid:{rule.sid}</p>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Custom rules */}
+        {customRules.length > 0 && (
+          <div className="space-y-2">
+            {Object.entries(customByCategory).map(([cat, rules]) => {
+              // Find color class: built-in category color, or custom color from first rule
+              const colorClass = CATEGORY_COLORS[cat]
+                ?? getCustomCategoryClasses(rules[0]?.categoryColor || 'indigo')
+              const catLabel = CATEGORY_LABELS[cat] ?? cat
+              return (
+                <div key={cat} className="rounded-lg border border-gray-800 overflow-hidden">
+                  <div className={`px-2 py-1 text-[10px] font-semibold border-b border-gray-800 ${colorClass}`}>
+                    {catLabel}
+                    <span className="ml-1 opacity-60 font-normal">(custom)</span>
+                  </div>
+                  {rules.map(rule => (
+                    <div
+                      key={rule.id}
+                      className="flex items-start gap-2 px-2 py-1.5 border-b border-gray-800/50 last:border-0 bg-indigo-950/10"
+                    >
+                      <div className="mt-0.5 flex-shrink-0">
+                        {rule.isValid
+                          ? <ShieldCheck size={11} className="text-indigo-400" />
+                          : <AlertTriangle size={11} className="text-amber-400" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] text-gray-300 leading-snug">{rule.msg}</p>
+                        <p className="text-[10px] text-gray-600 font-mono mt-0.5">sid:{rule.sid}</p>
+                        {!rule.isValid && (
+                          <p className="text-[10px] text-amber-500 mt-0.5">syntax error — will be flagged in simulation</p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => { setEditingRule(rule); setShowAddModal(true) }}
+                        className="text-gray-600 hover:text-indigo-400 transition flex-shrink-0 p-0.5"
+                        title="Edit rule"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                      <button
+                        onClick={() => onRemoveCustom(rule.id)}
+                        className="text-gray-600 hover:text-red-400 transition flex-shrink-0 p-0.5"
+                        title="Remove rule"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Add Rule button */}
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed border-gray-700 text-[11px] text-gray-500 hover:text-indigo-400 hover:border-indigo-700 transition"
+        >
+          <Plus size={12} />
+          Add custom rule
+        </button>
+      </div>
+
+      {showAddModal && (
+        <AddCustomRuleModal
+          existingCustomRules={customRules}
+          initialRule={editingRule ?? undefined}
+          onSave={rule => {
+            if (editingRule) {
+              onUpdateCustom(rule)
+            } else {
+              onAddCustom(rule)
+            }
+            setShowAddModal(false)
+            setEditingRule(null)
+          }}
+          onClose={() => { setShowAddModal(false); setEditingRule(null) }}
+        />
+      )}
+    </>
+  )
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props {
@@ -246,6 +449,8 @@ const EMPTY: DeviceData = {
   subnet: '', ports: '', os: '', zone: 'internal', notes: '',
   selectedAttacks: [], customAttackCommands: '',
   noDefense: false, enabledDefenses: [], customDefenseConfig: '',
+  selectedRuleIds: [],
+  customRules: [],
 }
 
 export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
@@ -265,6 +470,8 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
         noDefense: raw.noDefense ?? false,
         enabledDefenses: raw.enabledDefenses ?? [],
         customDefenseConfig: raw.customDefenseConfig ?? '',
+        selectedRuleIds: raw.selectedRuleIds ?? [],
+        customRules: raw.customRules ?? [],
       })
       setIpError(null)
     }
@@ -298,6 +505,23 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
   function toggleDefense(id: string) {
     const current = form.enabledDefenses
     set('enabledDefenses', current.includes(id) ? current.filter(d => d !== id) : [...current, id])
+  }
+
+  function toggleRule(id: string) {
+    const current = form.selectedRuleIds
+    set('selectedRuleIds', current.includes(id) ? current.filter(r => r !== id) : [...current, id])
+  }
+
+  function addCustomRule(rule: CustomRuleEntry) {
+    set('customRules', [...form.customRules, rule])
+  }
+
+  function updateCustomRule(rule: CustomRuleEntry) {
+    set('customRules', form.customRules.map(r => r.id === rule.id ? rule : r))
+  }
+
+  function removeCustomRule(id: string) {
+    set('customRules', form.customRules.filter(r => r.id !== id))
   }
 
   function handleSave() {
@@ -440,8 +664,20 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
           />
         )}
 
-        {/* Defense panel — shown for all non-attacker devices */}
-        {form.deviceType !== 'attacker' && (
+        {/* IDS rules panel — shown only for Suricata IDS nodes */}
+        {form.deviceType === 'ids' && (
+          <IDSRulesPanel
+            selected={form.selectedRuleIds}
+            customRules={form.customRules}
+            onToggle={toggleRule}
+            onAddCustom={addCustomRule}
+            onUpdateCustom={updateCustomRule}
+            onRemoveCustom={removeCustomRule}
+          />
+        )}
+
+        {/* Defense panel — shown for all non-attacker, non-IDS devices */}
+        {form.deviceType !== 'attacker' && form.deviceType !== 'ids' && (
           <DefensePanel
             noDefense={form.noDefense}
             enabled={form.enabledDefenses}

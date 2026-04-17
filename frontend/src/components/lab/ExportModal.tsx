@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import type { Node } from '@xyflow/react'
 import type { ActiveRule, DeviceData } from '../../types/lab'
+import { PREDEFINED_RULES } from '../../data/rules'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -169,19 +170,61 @@ function buildInterfaceConfigs(nodes: Node[], os: EnvSetup['os']): string {
 
 // ─── Content generators ───────────────────────────────────────────────────────
 
+/**
+ * Convert "alert" action to "drop" for IPS mode.
+ * Leaves pass / reject / drop unchanged so hand-written rules are respected.
+ */
+function applyDeployMode(ruleText: string, deployMode: EnvSetup['deployMode']): string {
+  if (deployMode !== 'ips') return ruleText
+  return ruleText.replace(/^alert(\s+)/, 'drop$1')
+}
+
+/** Collect rules assigned to IDS nodes, grouped by sensor label. */
+function collectNodeRules(nodes: Node[]): { label: string; rules: { text: string; isValid: boolean }[] }[] {
+  const ruleMap = new Map(PREDEFINED_RULES.map(r => [r.id, r]))
+  const result: { label: string; rules: { text: string; isValid: boolean }[] }[] = []
+  for (const n of nodes) {
+    const d = getDeviceData(n)
+    if (d.deviceType !== 'ids') continue
+
+    const rules: { text: string; isValid: boolean }[] = []
+
+    // Predefined rules selected via checkbox
+    for (const id of (d.selectedRuleIds ?? [])) {
+      const rule = ruleMap.get(id)
+      if (rule) rules.push({ text: rule.rule, isValid: true })
+    }
+
+    // Manually written custom rules
+    for (const cr of (d.customRules ?? [])) {
+      rules.push({ text: cr.rule, isValid: cr.isValid })
+    }
+
+    if (rules.length > 0) result.push({ label: d.label || 'Suricata IDS', rules })
+  }
+  return result
+}
+
 function buildRulesFile(
   projectName: string,
   activeRules: ActiveRule[],
   nodes: Node[],
   setup: EnvSetup,
 ): string {
-  const date     = new Date().toISOString().slice(0, 10)
-  const homeNet  = resolveHomeNet(nodes, setup.homeNetOverride)
+  const date       = new Date().toISOString().slice(0, 10)
+  const homeNet    = resolveHomeNet(nodes, setup.homeNetOverride)
   const devSummary = nodes
     .map(getDeviceData)
     .filter(d => d.ip && d.label)
     .map(d => `${d.label} (${d.ip})`)
     .join(', ')
+
+  const nodeRuleGroups  = collectNodeRules(nodes)
+  const totalNodeRules  = nodeRuleGroups.reduce((sum, g) => sum + g.rules.length, 0)
+  const invalidNodeRules = nodeRuleGroups.reduce((sum, g) => sum + g.rules.filter(r => !r.isValid).length, 0)
+  const totalRules     = activeRules.length + totalNodeRules
+
+  const isIps = setup.deployMode === 'ips'
 
   const lines: string[] = [
     `# ══════════════════════════════════════════════════════════════════════════════`,
@@ -189,8 +232,8 @@ function buildRulesFile(
     `# ══════════════════════════════════════════════════════════════════════════════`,
     `#  Project   : ${projectName}`,
     `#  Generated : ${date}`,
-    `#  Rules     : ${activeRules.length}`,
-    `#  Mode      : ${setup.deployMode.toUpperCase()} (${setup.deployMode === 'ids' ? 'detection only' : 'inline blocking'})`,
+    `#  Rules     : ${totalRules} (${activeRules.length} global + ${totalNodeRules} from IDS nodes)`,
+    `#  Mode      : ${setup.deployMode.toUpperCase()} (${isIps ? 'inline blocking — "alert" rewritten to "drop"' : 'detection only — packets are NOT blocked'})`,
     `#  Env type  : ${setup.envType}`,
     `#`,
     devSummary ? `#  Devices   : ${devSummary}` : `#  Devices   : (none configured)`,
@@ -199,14 +242,70 @@ function buildRulesFile(
     `#  Deployment: drop into /etc/suricata/rules/ and add to rule-files: in suricata.yaml`,
     `# ══════════════════════════════════════════════════════════════════════════════`,
     ``,
+    isIps
+      ? `# [IPS MODE] All "alert" actions below have been converted to "drop".`
+      : `# [IDS MODE] Rules use "alert" — traffic is detected and logged, never blocked.`,
+    isIps
+      ? `# Suricata will DROP matching packets inline.  Switch to IDS mode to observe only.`
+      : `# To block traffic, re-export in IPS mode (changes "alert" → "drop").`,
+    ``,
+    `# ── Why $HOME_NET / $EXTERNAL_NET instead of "any any"? ─────────────────────`,
+    `# Writing rules as:  alert tcp $EXTERNAL_NET any -> $HOME_NET $HTTP_PORTS (...)`,
+    `# instead of:        alert tcp any          any -> any        any          (...)`,
+    `# gives you three concrete advantages:`,
+    `#`,
+    `# 1. Precision — "any any" fires on ALL TCP traffic including internal-to-internal`,
+    `#    chatter that is almost never an attack.  $EXTERNAL_NET matches only sources`,
+    `#    outside your network, slashing false positives dramatically.`,
+    `#`,
+    `# 2. Performance — Suricata evaluates header conditions before inspecting the`,
+    `#    payload.  Narrowing src/dst with variables means fewer packets reach the`,
+    `#    expensive content/PCRE matching stage.`,
+    `#`,
+    `# 3. Maintainability — when your IP range changes you update HOME_NET in`,
+    `#    suricata.yaml once and every rule adjusts automatically.  With "any any"`,
+    `#    you would have to edit each rule individually.`,
+    `#`,
+    `# $HOME_NET is set to: ${homeNet}`,
+    `# $EXTERNAL_NET is set to: !$HOME_NET  (everything that is NOT in HOME_NET)`,
+    `# Both are defined in the vars: section of suricata.yaml (see YAML tab).`,
+    `# ─────────────────────────────────────────────────────────────────────────────`,
+    ``,
   ]
 
-  if (activeRules.length === 0) {
-    lines.push('# No rules are currently active — add rules from the Rule Library first.')
-  } else {
+  // ── Global rules (from Rule Library panel) ────────────────────────────────
+  if (activeRules.length > 0) {
+    lines.push(`# ── Global rules ─────────────────────────────────────────────────────────────`)
     for (const ar of activeRules) {
-      lines.push(ar.customText ?? ar.entry.rule)
+      lines.push(applyDeployMode(ar.customText ?? ar.entry.rule, setup.deployMode))
     }
+    lines.push('')
+  }
+
+  // Invalid custom rules warning
+  if (invalidNodeRules > 0) {
+    lines.push(`# ⚠  ${invalidNodeRules} custom rule${invalidNodeRules !== 1 ? 's' : ''} below have syntax errors.`)
+    lines.push(`#    They are included as-is but Suricata will reject them on load.`)
+    lines.push(`#    Fix them in the IDS node panel before deploying.`)
+    lines.push(``)
+  }
+
+  // ── Per-node rules (assigned on each Suricata sensor) ────────────────────
+  for (const group of nodeRuleGroups) {
+    lines.push(`# ── Rules loaded on: ${group.label} ${'─'.repeat(Math.max(0, 60 - group.label.length))}`)
+    for (const rule of group.rules) {
+      if (!rule.isValid) {
+        lines.push(`# ⚠ SYNTAX ERROR — Suricata will reject this rule:`)
+        lines.push(`# ${applyDeployMode(rule.text, setup.deployMode)}`)
+      } else {
+        lines.push(applyDeployMode(rule.text, setup.deployMode))
+      }
+    }
+    lines.push('')
+  }
+
+  if (totalRules === 0) {
+    lines.push('# No rules configured — add rules from the Rule Library or select rules on a Suricata IDS node.')
   }
 
   lines.push('')
@@ -891,6 +990,7 @@ function OutputStep({
   const [tab, setTab] = useState<ExportTab>('rules')
   const slug = projectName.toLowerCase().replace(/\s+/g, '-') || 'lab'
 
+  const nodeRuleCount = collectNodeRules(nodes).reduce((s, g) => s + g.rules.length, 0)
   const rulesContent    = buildRulesFile(projectName, activeRules, nodes, setup)
   const yamlContent     = buildYaml(nodes, setup)
   const inventoryContent = buildInventoryText(projectName, nodes, setup)
@@ -898,7 +998,7 @@ function OutputStep({
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
-      <TabBar active={tab} onChange={setTab} ruleBadge={activeRules.length} />
+      <TabBar active={tab} onChange={setTab} ruleBadge={activeRules.length + nodeRuleCount} />
 
       {/* Content area */}
       <div className="flex-1 min-h-0 flex flex-col gap-2">

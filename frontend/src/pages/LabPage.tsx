@@ -164,6 +164,8 @@ function makeDeviceNode(deviceType: DeviceType, position: { x: number; y: number
     ports: '', os: '', zone: 'internal', notes: '',
     selectedAttacks: [], customAttackCommands: '',
     noDefense: false, enabledDefenses: [], customDefenseConfig: '',
+    selectedRuleIds: [],
+    customRules: [],
     ...defaults[deviceType],
   }
   return { id, type: 'device', position, data: data as unknown as Record<string, unknown> }

@@ -433,10 +433,13 @@ def run_simulation(
 
     # ── 8. Parse + evaluate rules (only when IDS can see traffic) ────────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
+    parse_errors: list[str] = []
     for raw in rule_texts:
         pr = parse_rule(raw)
         if pr:
             parsed_rules.append((raw, pr))
+        else:
+            parse_errors.append(raw)
 
     results: list[RuleMatchResult] = []
     if not ids_visible:
@@ -464,6 +467,24 @@ def run_simulation(
         for raw, pr in parsed_rules:
             result = _evaluate_rule(pr, packets, home_ips, external_ips, scenario_id)
             results.append(result)
+
+    # Append results for rules that couldn't be parsed at all
+    for raw in parse_errors:
+        # Try to extract a sid/msg hint for display
+        sid_hint  = (re.search(r'\bsid\s*:\s*(\d+)', raw) or re.search(r'', '')).group(1) if re.search(r'\bsid\s*:\s*(\d+)', raw) else '?'
+        msg_hint  = re.search(r'\bmsg\s*:\s*"([^"]+)"', raw)
+        label = msg_hint.group(1) if msg_hint else raw[:60].strip()
+        results.append(RuleMatchResult(
+            rule_sid=sid_hint,
+            rule_msg=label,
+            fired=False,
+            explanation=(
+                "This rule could not be parsed — it contains a syntax error. "
+                "Suricata would reject it on startup. "
+                "Open the IDS node panel and fix the rule syntax."
+            ),
+            why_not="Rule syntax is invalid: check action, header format, and that sid/msg keywords are present.",
+        ))
 
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)

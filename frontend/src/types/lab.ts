@@ -30,9 +30,23 @@ export interface DeviceData {
   noDefense: boolean          // explicit "0 protection" mode
   enabledDefenses: string[]   // list of defense IDs from defenses.ts
   customDefenseConfig: string // free-form config text
+  // IDS/Suricata-only: which rules are loaded on this sensor
+  selectedRuleIds: string[]
+  customRules: CustomRuleEntry[]
 }
 
 export type RuleCategory = 'scanning' | 'brute-force' | 'web-attacks' | 'malware' | 'exfiltration' | 'dns' | 'custom'
+
+/** A rule written manually by the user on an IDS node. */
+export interface CustomRuleEntry {
+  id: string            // unique, e.g. "custom-1234567890"
+  sid: string           // SID number string
+  category: string      // RuleCategory key or free-form custom name
+  categoryColor: string // color key from COLOR_PALETTE ("indigo", "teal" …), empty for built-in categories
+  msg: string           // display name shown in the panel
+  rule: string          // full Suricata rule text as written by the user
+  isValid: boolean      // passed frontend syntax check?
+}
 export type RuleDifficulty = 'beginner' | 'intermediate' | 'advanced'
 
 export interface RuleEntry {
