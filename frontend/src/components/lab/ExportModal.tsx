@@ -27,6 +27,7 @@ interface EnvSetup {
   homeNetOverride: string  // blank = auto from topology
   logDir: string
   monitoredSegment: string
+  logFormat: 'eve-json' | 'fast' | 'both'
 }
 
 const DEFAULT_SETUP: EnvSetup = {
@@ -38,6 +39,7 @@ const DEFAULT_SETUP: EnvSetup = {
   homeNetOverride: '',
   logDir: '/var/log/suricata',
   monitoredSegment: '',
+  logFormat: 'both',
 }
 
 type ExportTab = 'rules' | 'yaml' | 'inventory' | 'guide'
@@ -394,23 +396,38 @@ function buildYaml(nodes: Node[], setup: EnvSetup): string {
     `    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"`,
     ``,
     `# ── Logging ───────────────────────────────────────────────────────────────────`,
+    `# Format: ${setup.logFormat === 'eve-json' ? 'EVE JSON only' : setup.logFormat === 'fast' ? 'fast.log only' : 'EVE JSON + fast.log'}`,
     `default-log-dir: ${logDir}/`,
     ``,
     `outputs:`,
-    `  - fast:`,
-    `      enabled: yes`,
-    `      filename: fast.log`,
-    `      append: yes`,
-    `  - eve-log:`,
-    `      enabled: yes`,
-    `      type: file`,
-    `      filename: eve.json`,
-    `      types:`,
-    `        - alert`,
-    `        - flow`,
-    `        - stats`,
-    `        - http`,
-    `        - dns`,
+    ...(setup.logFormat !== 'eve-json' ? [
+      `  - fast:`,
+      `      enabled: yes`,
+      `      filename: fast.log`,
+      `      append: yes`,
+      `      # Human-readable one-line format: timestamp, action, src/dst, SID, msg`,
+      `      # Tail it: tail -f ${logDir}/fast.log`,
+    ] : [
+      `  - fast:`,
+      `      enabled: no    # disabled — using EVE JSON instead`,
+    ]),
+    ...(setup.logFormat !== 'fast' ? [
+      `  - eve-log:`,
+      `      enabled: yes`,
+      `      type: file`,
+      `      filename: eve.json`,
+      `      # Structured JSON — one event per line, queryable with jq`,
+      `      # Tail alerts: tail -f ${logDir}/eve.json | jq 'select(.event_type=="alert")'`,
+      `      types:`,
+      `        - alert`,
+      `        - flow`,
+      `        - stats`,
+      `        - http`,
+      `        - dns`,
+    ] : [
+      `  - eve-log:`,
+      `      enabled: no    # disabled — using fast.log instead`,
+    ]),
     ``,
     `# ── Rules ─────────────────────────────────────────────────────────────────────`,
     `# Bundled community rules live here (installed by the package):`,
@@ -690,14 +707,19 @@ ping ${`<target-ip>`}             # ICMP rules` : ''
     testNote,
     ``,
     `# ── Step 7: Monitor alerts ───────────────────────────────────────────────────`,
-    `# Human-readable line per alert:`,
-    `tail -f ${logDir}/fast.log`,
-    ``,
-    `# Structured JSON — filter to alerts only:`,
-    `tail -f ${logDir}/eve.json | jq 'select(.event_type=="alert")'`,
-    ``,
-    `# Filter by SID:`,
-    `grep 'sid:XXXX' ${logDir}/fast.log`,
+    ...(setup.logFormat !== 'eve-json' ? [
+      `# fast.log — human-readable, one line per alert:`,
+      `tail -f ${logDir}/fast.log`,
+      `grep 'sid:XXXX' ${logDir}/fast.log   # filter by SID`,
+      ``,
+    ] : []),
+    ...(setup.logFormat !== 'fast' ? [
+      `# eve.json — structured JSON, one event per line:`,
+      `tail -f ${logDir}/eve.json | jq 'select(.event_type=="alert")'`,
+      `tail -f ${logDir}/eve.json | jq 'select(.alert.signature_id==XXXX)'  # filter by SID`,
+      `tail -f ${logDir}/eve.json | jq 'select(.src_ip=="203.0.113.10")'    # filter by IP`,
+      ``,
+    ] : []),
     ``,
     `# ── Step 8: Reload rules (no restart needed) ─────────────────────────────────`,
     `sudo kill -USR2 $(pidof suricata)`,
@@ -916,6 +938,19 @@ function SetupStep({
           placeholder="e.g. Office LAN, DMZ, Server room"
           hint="For documentation purposes only"
         />
+
+        <div className="col-span-2">
+          <RadioGroup
+            label="Logging Format"
+            value={setup.logFormat}
+            onChange={v => setSetup({ ...setup, logFormat: v })}
+            options={[
+              { value: 'both',     label: 'EVE JSON + fast.log', hint: 'recommended — structured JSON and human-readable' },
+              { value: 'eve-json', label: 'EVE JSON only',       hint: 'machine-readable, integrates with SIEM / jq' },
+              { value: 'fast',     label: 'fast.log only',       hint: 'simple one-liner, easy to tail and grep' },
+            ]}
+          />
+        </div>
       </div>
 
       <div className="flex justify-end mt-auto pt-2 flex-shrink-0">
@@ -1034,7 +1069,7 @@ function OutputStep({
           Back to Setup
         </button>
         <p className="text-[10px] text-gray-600">
-          {setup.deployMode.toUpperCase()} · {setup.os === 'ubuntu' ? 'Ubuntu/Debian' : setup.os === 'rhel' ? 'RHEL/Fedora' : 'Linux'} · Suricata {setup.suricataVersion}.x
+          {setup.deployMode.toUpperCase()} · {setup.os === 'ubuntu' ? 'Ubuntu/Debian' : setup.os === 'rhel' ? 'RHEL/Fedora' : 'Linux'} · Suricata {setup.suricataVersion}.x · {setup.logFormat === 'eve-json' ? 'EVE JSON' : setup.logFormat === 'fast' ? 'fast.log' : 'EVE JSON + fast.log'}
         </p>
       </div>
     </div>

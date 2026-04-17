@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listProjects, createProject, deleteProject, type ProjectSummary } from '../api/projects'
+import { listProjects, createProject, deleteProject, updateProject, type ProjectSummary } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
 
 function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime()
+  // Backend returns UTC timestamps without the 'Z' suffix; append it so the
+  // browser parses them as UTC rather than local time.
+  const normalized = dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z'
+  const diff = Date.now() - new Date(normalized).getTime()
   const mins = Math.floor(diff / 60000)
   if (mins < 1) return 'just now'
   if (mins < 60) return `${mins}m ago`
@@ -25,6 +28,8 @@ export default function DashboardPage() {
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [deleteId, setDeleteId] = useState<number | null>(null)
+  const [renameId, setRenameId] = useState<number | null>(null)
+  const [renameName, setRenameName] = useState('')
 
   useEffect(() => {
     listProjects()
@@ -51,6 +56,13 @@ export default function DashboardPage() {
     await deleteProject(id)
     setProjects((prev) => prev.filter((p) => p.id !== id))
     setDeleteId(null)
+  }
+
+  async function handleRename() {
+    if (!renameId || !renameName.trim()) return
+    const updated = await updateProject(renameId, { name: renameName.trim() })
+    setProjects(prev => prev.map(p => p.id === renameId ? { ...p, name: updated.name } : p))
+    setRenameId(null)
   }
 
   return (
@@ -136,15 +148,28 @@ export default function DashboardPage() {
                         d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                     </svg>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setDeleteId(p.id) }}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
+                  <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setRenameName(p.name); setRenameId(p.id) }}
+                      className="p-1 text-gray-500 hover:text-indigo-400 transition"
+                      title="Rename"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDeleteId(p.id) }}
+                      className="p-1 text-gray-500 hover:text-red-400 transition"
+                      title="Delete"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 <h3 className="font-semibold text-white text-sm mb-1 truncate">{p.name}</h3>
                 {p.description && (
@@ -202,6 +227,37 @@ export default function DashboardPage() {
                 className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition"
               >
                 {creating ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename modal */}
+      {renameId !== null && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <h2 className="text-lg font-bold text-white mb-4">Rename project</h2>
+            <input
+              autoFocus
+              value={renameName}
+              onChange={e => setRenameName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleRename(); if (e.key === 'Escape') setRenameId(null) }}
+              className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition mb-5"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={() => setRenameId(null)}
+                className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-lg transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRename}
+                disabled={!renameName.trim()}
+                className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition"
+              >
+                Rename
               </button>
             </div>
           </div>

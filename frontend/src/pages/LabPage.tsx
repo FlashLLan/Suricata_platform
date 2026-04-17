@@ -40,7 +40,7 @@ const EDGE_TYPES: EdgeTypes = { 'animated-packet': AnimatedPacketEdge as never }
 const EDGE_STYLES: Record<EdgeKind, Pick<Edge, 'style' | 'animated' | 'labelStyle' | 'labelBgStyle'> & { labelBgPadding?: [number, number] }> = {
   'same-zone':  { style: { stroke: '#6366f1', strokeWidth: 2 }, animated: false },
   'cross-zone': { style: { stroke: '#f59e0b', strokeWidth: 2 }, animated: false, labelStyle: { fill: '#f59e0b', fontSize: 10, fontWeight: 600 }, labelBgStyle: { fill: '#1f1200', fillOpacity: 0.8 }, labelBgPadding: [4, 2] },
-  'attack':     { style: { stroke: '#ef4444', strokeWidth: 2 }, animated: true,  labelStyle: { fill: '#ef4444', fontSize: 10, fontWeight: 600 }, labelBgStyle: { fill: '#1f0000', fillOpacity: 0.8 }, labelBgPadding: [4, 2] },
+  'attack':     { style: { stroke: '#ef4444', strokeWidth: 2, strokeDasharray: '6 3' }, animated: true,  labelStyle: { fill: '#ef4444', fontSize: 10, fontWeight: 600 }, labelBgStyle: { fill: '#1f0000', fillOpacity: 0.8 }, labelBgPadding: [4, 2] },
   'monitoring': { style: { stroke: '#a855f7', strokeWidth: 1.5, strokeDasharray: '6 3' }, animated: true },
   'blocked':    { style: { stroke: '#dc2626', strokeWidth: 1, strokeDasharray: '4 4' }, animated: false },
   'no-route':   { style: { stroke: '#06b6d4', strokeWidth: 1.5, strokeDasharray: '3 5' }, animated: false, labelStyle: { fill: '#06b6d4', fontSize: 10, fontWeight: 600 }, labelBgStyle: { fill: '#001a1f', fillOpacity: 0.85 }, labelBgPadding: [4, 2] },
@@ -200,6 +200,14 @@ export default function LabPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<string | null>(null)
+  const [isDirty, setIsDirty] = useState(false)
+  const isLoaded = useRef(false)   // true once the project data has been restored into state
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Inline project rename ────────────────────────────────────────────────
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editName, setEditName] = useState('')
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   const [nodes, setNodes, onNodesChange] = useNodesState(INITIAL_NODES)
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES)
@@ -375,6 +383,35 @@ export default function LabPage() {
 
   const onPaneClick = useCallback(() => setSelectedNode(null), [])
 
+  // ── Dirty tracking — mark unsaved after any canvas / rule change ─────────
+  useEffect(() => {
+    if (!isLoaded.current) return   // ignore state changes during initial restore
+    setIsDirty(true)
+    // Debounced autosave: 4 s after last change
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => {
+      autosaveTimer.current = null
+      // handleSave reads project, nodes, edges, activeRules via closure — but those
+      // close over stale values in a plain function. We use refs to stay current.
+      doSave()
+    }, 4000)
+    return () => {
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges, activeRules])
+
+  // ── Save on browser/tab close ─────────────────────────────────────────────
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (!isDirty) return
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [isDirty])
+
   // ── Project load ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!id) return
@@ -384,7 +421,24 @@ export default function LabPage() {
         try {
           const topo = JSON.parse(p.topology_json || '{}')
           if (topo.nodes?.length) { setNodes(topo.nodes); nodesRef.current = topo.nodes }
-          if (topo.edges?.length) { setEdges(topo.edges); edgesRef.current = topo.edges }
+          if (topo.edges?.length) {
+            // Re-apply edge styles from node data so stale saved styles are corrected.
+            const nodeMap = new Map((topo.nodes ?? []).map((n: Node) => [n.id, n]))
+            const reStyled = (topo.edges as Edge[]).map(e => {
+              const src = nodeMap.get(e.source)
+              const tgt = nodeMap.get(e.target)
+              if (!src || !tgt) return e
+              const { kind, label, monitoringOnly, communicationAllowed, crossZone } =
+                getEdgeKind(src.data as unknown as DeviceData, tgt.data as unknown as DeviceData)
+              return {
+                ...e,
+                ...EDGE_STYLES[kind],
+                ...(label ? { label } : {}),
+                data: { edgeKind: kind, monitoringOnly, communicationAllowed, crossZone },
+              }
+            })
+            setEdges(reStyled); edgesRef.current = reStyled
+          }
           history.current = [{ nodes: topo.nodes ?? INITIAL_NODES, edges: topo.edges ?? INITIAL_EDGES }]
           historyPtr.current = 0
         } catch { /* use defaults */ }
@@ -398,24 +452,55 @@ export default function LabPage() {
             setActiveRules(loaded)
           }
         } catch { /* ignore */ }
+        // Mark load complete — dirty tracking starts from here
+        setTimeout(() => { isLoaded.current = true }, 0)
       })
       .catch(() => navigate('/dashboard'))
       .finally(() => setLoading(false))
   }, [id, navigate, setEdges, setNodes])
 
   // ── Save ──────────────────────────────────────────────────────────────────
-  async function handleSave() {
-    if (!project) return
+  // Refs so autosave callback always reads the latest values
+  const projectRef = useRef<typeof project>(null)
+  const activeRulesRef = useRef(activeRules)
+  useEffect(() => { projectRef.current = project }, [project])
+  useEffect(() => { activeRulesRef.current = activeRules }, [activeRules])
+
+  async function doSave() {
+    const p = projectRef.current
+    if (!p) return
     setSaving(true)
     try {
-      await updateProject(project.id, {
-        topology_json: JSON.stringify({ nodes, edges }),
-        rules_json: JSON.stringify(activeRules.map(r => r.entry.sid)),
+      await updateProject(p.id, {
+        topology_json: JSON.stringify({ nodes: nodesRef.current, edges: edgesRef.current }),
+        rules_json: JSON.stringify(activeRulesRef.current.map(r => r.entry.sid)),
       })
       setSavedAt(new Date().toLocaleTimeString())
+      setIsDirty(false)
     } finally {
       setSaving(false)
     }
+  }
+
+  async function handleSave() {
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
+    await doSave()
+  }
+
+  // ── Rename project ────────────────────────────────────────────────────────
+  function startRename() {
+    if (!project) return
+    setEditName(project.name)
+    setIsEditingName(true)
+    setTimeout(() => nameInputRef.current?.select(), 0)
+  }
+
+  async function commitRename() {
+    const trimmed = editName.trim()
+    setIsEditingName(false)
+    if (!trimmed || !project || trimmed === project.name) return
+    const updated = await updateProject(project.id, { name: trimmed })
+    setProject(updated)
   }
 
   // ── Node config update ────────────────────────────────────────────────────
@@ -549,7 +634,13 @@ export default function LabPage() {
 
       {/* ── Top bar ── */}
       <header className="flex-shrink-0 h-11 bg-gray-900 border-b border-gray-800 flex items-center px-3 gap-3">
-        <button onClick={() => navigate('/dashboard')} className="text-gray-400 hover:text-white transition p-1">
+        <button
+          onClick={() => {
+            if (isDirty && !window.confirm('You have unsaved changes. Leave without saving?')) return
+            navigate('/dashboard')
+          }}
+          className="text-gray-400 hover:text-white transition p-1"
+        >
           <ArrowLeft size={16} />
         </button>
         <div className="w-px h-5 bg-gray-700" />
@@ -560,15 +651,44 @@ export default function LabPage() {
                 d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
           </div>
-          <span className="text-sm font-semibold text-white truncate max-w-[200px]">{project?.name}</span>
+          {isEditingName ? (
+            <input
+              ref={nameInputRef}
+              value={editName}
+              onChange={e => setEditName(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.currentTarget.blur() }
+                if (e.key === 'Escape') { setIsEditingName(false) }
+              }}
+              className="bg-gray-800 border border-indigo-600 rounded px-2 py-0.5 text-sm font-semibold text-white focus:outline-none w-48"
+            />
+          ) : (
+            <button
+              onClick={startRename}
+              title="Click to rename"
+              className="text-sm font-semibold text-white truncate max-w-[200px] hover:text-indigo-300 transition text-left"
+            >
+              {project?.name}
+            </button>
+          )}
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          {savedAt && <span className="text-xs text-gray-600 hidden sm:block">Saved {savedAt}</span>}
+          {isDirty
+            ? <span className="text-xs text-amber-500/80 hidden sm:block">Unsaved changes</span>
+            : savedAt
+              ? <span className="text-xs text-gray-600 hidden sm:block">Saved {savedAt}</span>
+              : null
+          }
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 text-xs font-medium rounded-lg border border-gray-700 transition"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition disabled:opacity-50 ${
+              isDirty
+                ? 'bg-indigo-700 hover:bg-indigo-600 border-indigo-600 text-white'
+                : 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300'
+            }`}
           >
             <Save size={13} />
             {saving ? 'Saving…' : 'Save'}

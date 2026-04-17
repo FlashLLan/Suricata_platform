@@ -5,10 +5,10 @@ import {
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
   Minus, XCircle, ZapOff, Info,
 } from 'lucide-react'
-import { SCENARIOS } from '../../data/rules'
+import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
 import { runSimulation } from '../../api/simulation'
 import type {
-  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent,
+  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry,
 } from '../../types/lab'
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData } from '../../types/lab'
@@ -640,7 +640,12 @@ function DetectionTab({ result }: { result: SimulationResult }) {
           {[...result.results]
             .sort((a, b) => (b.fired ? 1 : 0) - (a.fired ? 1 : 0))
             .map((r, i) => (
-              <RuleResultCard key={i} result={r} dimmed={!idsVisible} />
+              <RuleResultCard
+                key={i}
+                result={r}
+                ruleEntry={PREDEFINED_RULES.find(p => p.sid === r.rule_sid)}
+                dimmed={!idsVisible}
+              />
             ))}
         </div>
       ) : (
@@ -658,7 +663,15 @@ function DetectionTab({ result }: { result: SimulationResult }) {
 
 // ─── Rule result card ─────────────────────────────────────────────────────────
 
-function RuleResultCard({ result, dimmed = false }: { result: RuleMatchResult; dimmed?: boolean }) {
+function RuleResultCard({
+  result,
+  ruleEntry,
+  dimmed = false,
+}: {
+  result: RuleMatchResult
+  ruleEntry?: RuleEntry
+  dimmed?: boolean
+}) {
   const [expanded, setExpanded] = useState(false)
 
   return (
@@ -700,6 +713,17 @@ function RuleResultCard({ result, dimmed = false }: { result: RuleMatchResult; d
               {result.fired ? result.explanation : result.why_not || result.explanation}
             </p>
           </div>
+
+          {/* False positive callout — only shown when the rule fired */}
+          {result.fired && ruleEntry?.false_positives && (
+            <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber-950/20 border border-amber-800/30">
+              <AlertTriangle size={12} className="text-amber-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[11px] font-semibold text-amber-400 mb-0.5">Potential False Positives</p>
+                <p className="text-[11px] text-amber-300/80 leading-relaxed">{ruleEntry.false_positives}</p>
+              </div>
+            </div>
+          )}
 
           {result.fired && result.matched_packets.length > 0 && (
             <div>

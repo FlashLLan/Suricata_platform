@@ -57,6 +57,7 @@ export interface RuleEntry {
   rule: string
   explanation: string
   difficulty: RuleDifficulty
+  false_positives?: string  // common sources of false alerts for this rule
 }
 
 export type ScenarioId =
