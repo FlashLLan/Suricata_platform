@@ -2,10 +2,10 @@ import { useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   X, Upload, FileText, AlertTriangle, CheckCircle, XCircle,
-  FlaskConical, Server, Shield, Activity, FolderPlus,
+  FlaskConical, Server, Shield, Activity, FolderPlus, ExternalLink,
 } from 'lucide-react'
 import { analyzePcap, type PcapAnalysisResult, type PcapRuleResult } from '../../api/pcap'
-import { createProject } from '../../api/projects'
+import { createProject, type Project } from '../../api/projects'
 import type { ActiveRule } from '../../types/lab'
 
 interface Props {
@@ -13,6 +13,20 @@ interface Props {
   onClose: () => void
   /** If omitted the "Load to Canvas" button is hidden (e.g. when called from the dashboard) */
   onLoadTopology?: (topology: { nodes: object[]; edges: object[] }) => void
+  /** Called after a project is successfully created — lets the dashboard update its list */
+  onProjectCreated?: (project: Project) => void
+}
+
+/** Rule SIDs that are most relevant for each detected scenario */
+const SCENARIO_RULES: Record<string, string[]> = {
+  'nmap-syn-scan':    ['1000001', '1000002'],
+  'ping-sweep':       ['1000002'],
+  'ssh-brute-force':  ['1000010'],
+  'http-brute-force': ['1000011'],
+  'sql-injection':    ['1000020', '1000021', '1000023'],
+  'dns-tunneling':    ['1000030', '1000031'],
+  'http-c2-beacon':   ['1000040'],
+  'normal-browsing':  [],
 }
 
 type Tab = 'overview' | 'topology' | 'detection'
@@ -42,7 +56,7 @@ const DEVICE_ICON: Record<string, string> = {
   ids:         '👁️',
 }
 
-export default function PcapImportModal({ activeRules, onClose, onLoadTopology }: Props) {
+export default function PcapImportModal({ activeRules, onClose, onLoadTopology, onProjectCreated }: Props) {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -59,6 +73,10 @@ export default function PcapImportModal({ activeRules, onClose, onLoadTopology }
   const [saveName, setSaveName]         = useState('')
   const [saving, setSaving]             = useState(false)
   const [saveError, setSaveError]       = useState<string | null>(null)
+  const [savedProject, setSavedProject] = useState<Project | null>(null)
+
+  // Lab context = onLoadTopology provided; dashboard context = it's absent
+  const isLabContext = !!onLoadTopology
 
   async function handleSaveProject() {
     if (!result || !saveName.trim()) return
@@ -69,15 +87,21 @@ export default function PcapImportModal({ activeRules, onClose, onLoadTopology }
         nodes: result.topology.nodes,
         edges: result.topology.edges,
       })
+      // Pre-populate rules matched to the detected scenario
+      const scenarioSids = SCENARIO_RULES[result.scenario.scenario_id] ?? []
+      const rules_json = scenarioSids.length ? JSON.stringify(scenarioSids) : undefined
+
       const project = await createProject(
         saveName.trim(),
         `Imported from ${result.filename} — ${result.scenario.name}`,
         topology_json,
+        rules_json,
       )
-      onClose()
-      navigate(`/lab/${project.id}`)
-    } catch {
-      setSaveError('Failed to save project. Please try again.')
+      onProjectCreated?.(project)
+      setSavedProject(project)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setSaveError(detail ?? 'Failed to save project. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -222,9 +246,11 @@ export default function PcapImportModal({ activeRules, onClose, onLoadTopology }
 
             {/* Rule count info */}
             {activeRules.length === 0 && (
-              <div className="flex items-start gap-2 bg-amber-900/20 border border-amber-800/40 rounded-lg px-3 py-2.5 text-xs text-amber-300">
-                <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
-                No rules loaded — topology and scenario will still be extracted, but no rule matching will run.
+              <div className="flex items-start gap-2 bg-gray-800/60 border border-gray-700/50 rounded-lg px-3 py-2.5 text-xs text-gray-400">
+                <AlertTriangle size={13} className="flex-shrink-0 mt-0.5 text-gray-500" />
+                {isLabContext
+                  ? 'No rules loaded — topology and scenario will be extracted, but no rule matching will run. Add rules to the panel first to test detection.'
+                  : 'Topology and scenario will be extracted automatically. Detection rules can be added after the project is created.'}
               </div>
             )}
 
@@ -390,7 +416,42 @@ export default function PcapImportModal({ activeRules, onClose, onLoadTopology }
                     </p>
 
                     {/* Save as Project */}
-                    {!showSaveForm ? (
+                    {savedProject ? (
+                      /* ── Success state ── */
+                      <div className="bg-green-950/30 border border-green-800/50 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle size={16} className="text-green-400 flex-shrink-0" />
+                          <div>
+                            <p className="text-sm font-semibold text-white">Project saved!</p>
+                            <p className="text-xs text-gray-400 mt-0.5 truncate max-w-[260px]">{savedProject.name}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          {isLabContext ? (
+                            <button
+                              onClick={() => window.open(`/lab/${savedProject.id}`, '_blank')}
+                              className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
+                            >
+                              <ExternalLink size={12} />
+                              Open in new tab
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => navigate(`/lab/${savedProject.id}`)}
+                              className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
+                            >
+                              Open project
+                            </button>
+                          )}
+                          <button
+                            onClick={onClose}
+                            className="px-3 py-2 border border-gray-700 hover:border-gray-500 text-gray-400 text-xs font-medium rounded-lg transition"
+                          >
+                            {isLabContext ? 'Close' : 'Stay here'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : !showSaveForm ? (
                       <button
                         onClick={() => {
                           setSaveName(result.filename.replace(/\.(pcap|pcapng|cap)$/i, ''))
@@ -409,10 +470,12 @@ export default function PcapImportModal({ activeRules, onClose, onLoadTopology }
                           autoFocus
                           type="text"
                           value={saveName}
-                          onChange={e => setSaveName(e.target.value)}
+                          onChange={e => { setSaveName(e.target.value); setSaveError(null) }}
                           onKeyDown={e => { if (e.key === 'Enter') handleSaveProject(); if (e.key === 'Escape') setShowSaveForm(false) }}
                           placeholder="e.g. Port scan investigation"
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 transition"
+                          className={`w-full bg-gray-900 border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none transition ${
+                            saveError ? 'border-red-500 focus:border-red-400' : 'border-gray-700 focus:border-indigo-500'
+                          }`}
                         />
                         {saveError && (
                           <p className="text-xs text-red-400">{saveError}</p>

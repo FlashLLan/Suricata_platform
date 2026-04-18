@@ -26,6 +26,7 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [modalStep, setModalStep] = useState<'template' | 'details'>('template')
   const [selectedTemplate, setSelectedTemplate] = useState<LabTemplate>(LAB_TEMPLATES[0])
@@ -47,18 +48,21 @@ export default function DashboardPage() {
     setSelectedTemplate(LAB_TEMPLATES[0])
     setNewName('')
     setNewDesc('')
+    setCreateError(null)
     setShowModal(true)
   }
 
   function handleSelectTemplate(tpl: LabTemplate) {
     setSelectedTemplate(tpl)
     setNewName(tpl.id === 'blank' ? '' : tpl.name)
+    setCreateError(null)
     setModalStep('details')
   }
 
   async function handleCreate() {
     if (!newName.trim()) return
     setCreating(true)
+    setCreateError(null)
     try {
       const tpl = selectedTemplate
       const topology_json = tpl.topology ? JSON.stringify(tpl.topology) : undefined
@@ -67,6 +71,9 @@ export default function DashboardPage() {
       setProjects((prev) => [p, ...prev])
       setShowModal(false)
       navigate(`/lab/${p.id}`)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setCreateError(detail ?? 'Failed to create project. Please try again.')
     } finally {
       setCreating(false)
     }
@@ -305,11 +312,16 @@ export default function DashboardPage() {
                   <input
                     autoFocus
                     value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
+                    onChange={(e) => { setNewName(e.target.value); setCreateError(null) }}
                     onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-                    className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    className={`w-full px-4 py-2.5 bg-gray-800 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 transition ${
+                      createError ? 'border-red-500 focus:ring-red-500' : 'border-gray-700 focus:ring-indigo-500'
+                    }`}
                     placeholder="My first lab"
                   />
+                  {createError && (
+                    <p className="mt-1.5 text-xs text-red-400">{createError}</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1.5">
@@ -380,6 +392,7 @@ export default function DashboardPage() {
         <PcapImportModal
           activeRules={[]}
           onClose={() => setShowPcap(false)}
+          onProjectCreated={(p) => setProjects(prev => [p, ...prev])}
         />
       )}
 

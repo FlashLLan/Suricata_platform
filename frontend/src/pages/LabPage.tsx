@@ -2,7 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useEffect, useState, useCallback, useRef, useLayoutEffect } from 'react'
 import {
   ReactFlow, Background, Controls, MiniMap,
-  addEdge, useNodesState, useEdgesState,
+  addEdge, useNodesState, useEdgesState, SelectionMode,
   type Connection, type Node, type Edge,
   type NodeTypes, type EdgeTypes, type NodeChange, type EdgeChange,
 } from '@xyflow/react'
@@ -222,6 +222,7 @@ export default function LabPage() {
   const simHistoryRef = useRef<SimulationRun[]>([])
   const [showExport, setShowExport] = useState(false)
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
+  const [isPanning, setIsPanning] = useState(false)
   // Edge IDs that are animating during simulation (to restore them afterward)
   const animatingEdgeIds = useRef<string[]>([])
 
@@ -774,7 +775,18 @@ export default function LabPage() {
         </aside>
 
         {/* Canvas */}
-        <div ref={reactFlowWrapper} className="flex-1 relative" onDrop={onDrop} onDragOver={onDragOver}>
+        <div
+          ref={reactFlowWrapper}
+          className="flex-1 relative"
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onMouseDown={(e) => { if (e.button === 2) setIsPanning(true) }}
+          onMouseUp={() => setIsPanning(false)}
+          onMouseLeave={() => setIsPanning(false)}
+        >
+          {isPanning && (
+            <style>{'.react-flow__pane { cursor: grabbing !important; }'}</style>
+          )}
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -789,6 +801,10 @@ export default function LabPage() {
             edgeTypes={EDGE_TYPES}
             fitView
             deleteKeyCode="Delete"
+            panOnDrag={[2]}
+            selectionOnDrag
+            selectionMode={SelectionMode.Partial}
+            onContextMenu={(e) => e.preventDefault()}
             style={{ background: '#0a0b0f' }}
             proOptions={{ hideAttribution: true }}
           >
@@ -811,7 +827,7 @@ export default function LabPage() {
 
           {/* Hint bar */}
           <div className="absolute bottom-0 left-0 right-0 flex items-center gap-4 px-3 py-1 bg-gray-900/80 border-t border-gray-800/60 text-[10px] text-gray-600">
-            <span>Drag from palette to add · Click node to configure · Delete key removes selection · <kbd className="bg-gray-800 px-1 rounded">Ctrl+Z</kbd> to undo</span>
+            <span>Drag from palette to add · Left-drag to select area · Right-drag to pan · Click node to configure · Delete removes selection · <kbd className="bg-gray-800 px-1 rounded">Ctrl+Z</kbd> to undo</span>
             <span className="ml-auto flex items-center gap-3">
               <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-indigo-500 inline-block" /> same zone</span>
               <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block" /> cross-zone</span>

@@ -29,6 +29,15 @@ def create_project(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
+    exists = db.query(models.Project).filter(
+        models.Project.user_id == current_user.id,
+        models.Project.name == project_in.name,
+    ).first()
+    if exists:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f'A project named "{project_in.name}" already exists. Choose a different name.',
+        )
     project = models.Project(
         user_id=current_user.id,
         name=project_in.name,
