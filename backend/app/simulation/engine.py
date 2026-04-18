@@ -583,6 +583,30 @@ def run_simulation(
 # Rule evaluation helpers (shared by both modes)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def run_rules_on_packets(
+    rule_texts: list[str],
+    packets: list[SimPacket],
+    home_ips: list[str],
+    ext_ips: list[str],
+    scenario_id: str = "pcap-import",
+) -> list[RuleMatchResult]:
+    """
+    Public helper: evaluate *rule_texts* against *packets* using the Python engine.
+
+    Used by the PCAP import endpoint, which has packets but no canvas topology.
+    Returns one RuleMatchResult per rule (fired or not), same as run_simulation().
+    """
+    parsed_rules: list[tuple[str, ParsedRule]] = []
+    parse_errors: list[str] = []
+    for raw in rule_texts:
+        pr = parse_rule(raw)
+        if pr:
+            parsed_rules.append((raw, pr))
+        else:
+            parse_errors.append(raw)
+    return _python_evaluate(parsed_rules, parse_errors, packets, home_ips, ext_ips, scenario_id)
+
+
 def _python_evaluate(
     parsed_rules: list[tuple[str, ParsedRule]],
     parse_errors: list[str],

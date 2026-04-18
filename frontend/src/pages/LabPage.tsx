@@ -7,7 +7,7 @@ import {
   type NodeTypes, type EdgeTypes, type NodeChange, type EdgeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle, Download } from 'lucide-react'
+import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle, Download, FileSearch } from 'lucide-react'
 
 import { getProject, updateProject, type Project } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
@@ -18,6 +18,7 @@ import DeviceConfigPanel from '../components/lab/DeviceConfigPanel'
 import RuleLibraryPanel from '../components/lab/RuleLibraryPanel'
 import SimulationModal from '../components/lab/SimulationModal'
 import ExportModal from '../components/lab/ExportModal'
+import PcapImportModal from '../components/lab/PcapImportModal'
 import AnimatedPacketEdge from '../components/lab/AnimatedPacketEdge'
 
 import type { DeviceData, DeviceType, ActiveRule, RuleEntry, SimulationRun } from '../types/lab'
@@ -216,6 +217,7 @@ export default function LabPage() {
   const [activeRules, setActiveRules] = useState<ActiveRule[]>([])
   const [rulesOpen, setRulesOpen] = useState(true)
   const [showSim, setShowSim] = useState(false)
+  const [showPcap, setShowPcap] = useState(false)
   const [simHistory, setSimHistory] = useState<SimulationRun[]>([])
   const simHistoryRef = useRef<SimulationRun[]>([])
   const [showExport, setShowExport] = useState(false)
@@ -497,6 +499,29 @@ export default function LabPage() {
     await doSave()
   }
 
+  // ── PCAP topology import ──────────────────────────────────────────────────
+  function handleLoadTopology(topology: { nodes: object[]; edges: object[] }) {
+    const importedNodes = (topology.nodes as Node[])
+    const importedEdges = (topology.edges as Edge[]).map(e => {
+      const src = importedNodes.find(n => n.id === e.source)
+      const tgt = importedNodes.find(n => n.id === e.target)
+      if (!src || !tgt) return e
+      const { kind, label, monitoringOnly, communicationAllowed, crossZone } =
+        getEdgeKind(src.data as unknown as DeviceData, tgt.data as unknown as DeviceData)
+      return {
+        ...e,
+        ...EDGE_STYLES[kind],
+        ...(label ? { label } : {}),
+        data: { edgeKind: kind, monitoringOnly, communicationAllowed, crossZone },
+      }
+    })
+    saveSnapshot()
+    setNodes(importedNodes)
+    setEdges(importedEdges)
+    nodesRef.current = importedNodes
+    edgesRef.current = importedEdges
+  }
+
   const handleRunSaved = useCallback(async (run: SimulationRun) => {
     const updated = [run, ...simHistoryRef.current].slice(0, 50)
     setSimHistory(updated)
@@ -715,6 +740,14 @@ export default function LabPage() {
             {saving ? 'Saving…' : 'Save'}
           </button>
           <button
+            onClick={() => setShowPcap(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 hover:text-white text-xs font-medium rounded-lg transition"
+            title="Import and analyze a .pcap file"
+          >
+            <FileSearch size={13} />
+            Import PCAP
+          </button>
+          <button
             onClick={() => setShowSim(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
           >
@@ -856,6 +889,15 @@ export default function LabPage() {
           activeRules={activeRules}
           nodes={nodes}
           onClose={() => setShowExport(false)}
+        />
+      )}
+
+      {/* PCAP import modal */}
+      {showPcap && (
+        <PcapImportModal
+          activeRules={activeRules}
+          onClose={() => setShowPcap(false)}
+          onLoadTopology={handleLoadTopology}
         />
       )}
 

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine
-from app.routers import auth, projects, simulation
+from app.routers import auth, projects, simulation, pcap
 
 # Create all tables on startup
 Base.metadata.create_all(bind=engine)
@@ -24,6 +24,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(simulation.router)
+app.include_router(pcap.router)
 
 
 @app.get("/api/health")

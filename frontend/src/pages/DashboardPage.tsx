@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { listProjects, createProject, deleteProject, updateProject, type ProjectSummary } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
 import { LAB_TEMPLATES, type LabTemplate } from '../data/templates'
+import PcapImportModal from '../components/lab/PcapImportModal'
 
 function timeAgo(dateStr: string): string {
   // Backend returns UTC timestamps without the 'Z' suffix; append it so the
@@ -30,6 +31,7 @@ export default function DashboardPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<LabTemplate>(LAB_TEMPLATES[0])
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
+  const [showPcap, setShowPcap] = useState(false)
   const [deleteId, setDeleteId] = useState<number | null>(null)
   const [renameId, setRenameId] = useState<number | null>(null)
   const [renameName, setRenameName] = useState('')
@@ -223,6 +225,24 @@ export default function DashboardPage() {
                 </button>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1">
+                {/* Import PCAP option */}
+                <button
+                  onClick={() => { setShowModal(false); setShowPcap(true) }}
+                  className="text-left p-4 bg-indigo-950/40 hover:bg-indigo-950/70 border border-indigo-700/50 hover:border-indigo-500 rounded-xl transition-all group"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <svg className="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <p className="text-sm font-semibold text-indigo-300 group-hover:text-indigo-200 transition leading-tight mb-1.5">
+                    Import PCAP
+                  </p>
+                  <p className="text-[11px] text-indigo-400/70 leading-relaxed">
+                    Upload a .pcap capture — topology and scenario are reconstructed automatically.
+                  </p>
+                </button>
+
                 {LAB_TEMPLATES.map((tpl) => (
                   <button
                     key={tpl.id}
@@ -353,6 +373,14 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* PCAP import modal */}
+      {showPcap && (
+        <PcapImportModal
+          activeRules={[]}
+          onClose={() => setShowPcap(false)}
+        />
       )}
 
       {/* Delete confirm modal */}
