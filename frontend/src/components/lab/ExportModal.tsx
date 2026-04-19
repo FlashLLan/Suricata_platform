@@ -6,6 +6,7 @@ import {
 import type { Node } from '@xyflow/react'
 import type { ActiveRule, DeviceData } from '../../types/lab'
 import { PREDEFINED_RULES } from '../../data/rules'
+import { getHomeIPs, resolveHomeNet } from '../../utils/exportHelpers'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -48,21 +49,6 @@ type ExportTab = 'rules' | 'yaml' | 'inventory' | 'guide'
 
 function getDeviceData(n: Node): DeviceData {
   return n.data as unknown as DeviceData
-}
-
-function getHomeIPs(nodes: Node[]): string[] {
-  return nodes
-    .map(getDeviceData)
-    .filter(d => d.ip && ['internal', 'dmz', 'management'].includes(d.zone))
-    .map(d => d.ip)
-}
-
-function resolveHomeNet(nodes: Node[], override: string): string {
-  if (override.trim()) return override.trim()
-  const ips = getHomeIPs(nodes)
-  if (ips.length === 0) return '192.168.0.0/16'
-  if (ips.length === 1) return ips[0]
-  return `[${ips.join(',')}]`
 }
 
 /** Guess the default gateway from a host IP — assumes .1 of the same /24. */

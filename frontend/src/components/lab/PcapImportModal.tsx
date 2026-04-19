@@ -7,6 +7,7 @@ import {
 import { analyzePcap, type PcapAnalysisResult, type PcapRuleResult } from '../../api/pcap'
 import { createProject, type Project } from '../../api/projects'
 import type { ActiveRule } from '../../types/lab'
+import { SCENARIO_RULES } from '../../data/scenarioRules'
 
 interface Props {
   activeRules: ActiveRule[]
@@ -15,18 +16,6 @@ interface Props {
   onLoadTopology?: (topology: { nodes: object[]; edges: object[] }) => void
   /** Called after a project is successfully created — lets the dashboard update its list */
   onProjectCreated?: (project: Project) => void
-}
-
-/** Rule SIDs that are most relevant for each detected scenario */
-const SCENARIO_RULES: Record<string, string[]> = {
-  'nmap-syn-scan':    ['1000001', '1000002'],
-  'ping-sweep':       ['1000002'],
-  'ssh-brute-force':  ['1000010'],
-  'http-brute-force': ['1000011'],
-  'sql-injection':    ['1000020', '1000021', '1000023'],
-  'dns-tunneling':    ['1000030', '1000031'],
-  'http-c2-beacon':   ['1000040'],
-  'normal-browsing':  [],
 }
 
 type Tab = 'overview' | 'topology' | 'detection'
