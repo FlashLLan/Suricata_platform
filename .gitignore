@@ -1,5 +1,6 @@
-# Design docs
+# Design docs (exclude internal planning files but keep README)
 *.md
+!README.md
 
 # Python
 __pycache__/
