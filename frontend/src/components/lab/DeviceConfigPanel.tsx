@@ -9,6 +9,7 @@ import {
 import { PREDEFINED_RULES, CATEGORY_LABELS, CATEGORY_COLORS } from '../../data/rules'
 import AddCustomRuleModal, { getCustomCategoryClasses } from './AddCustomRuleModal'
 import DefensePanel from './DefensePanel'
+import FirewallPolicyPanel from './FirewallPolicyPanel'
 
 // ─── IP helpers ───────────────────────────────────────────────────────────────
 
@@ -451,6 +452,7 @@ const EMPTY: DeviceData = {
   noDefense: false, enabledDefenses: [], customDefenseConfig: '',
   selectedRuleIds: [],
   customRules: [],
+  firewallPolicy: undefined,
 }
 
 export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
@@ -472,6 +474,7 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
         customDefenseConfig: raw.customDefenseConfig ?? '',
         selectedRuleIds: raw.selectedRuleIds ?? [],
         customRules: raw.customRules ?? [],
+        firewallPolicy: raw.firewallPolicy,
       })
       setIpError(null)
     }
@@ -676,8 +679,16 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
           />
         )}
 
-        {/* Defense panel — shown for all non-attacker, non-IDS devices */}
-        {form.deviceType !== 'attacker' && form.deviceType !== 'ids' && (
+        {/* Firewall policy panel — only for firewall nodes */}
+        {form.deviceType === 'firewall' && (
+          <FirewallPolicyPanel
+            policy={form.firewallPolicy}
+            onChange={p => set('firewallPolicy', p)}
+          />
+        )}
+
+        {/* Defense panel — non-attacker, non-IDS, non-firewall devices */}
+        {form.deviceType !== 'attacker' && form.deviceType !== 'ids' && form.deviceType !== 'firewall' && (
           <DefensePanel
             noDefense={form.noDefense}
             enabled={form.enabledDefenses}

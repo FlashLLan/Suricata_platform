@@ -1,3 +1,33 @@
+export type NetworkZone = 'internal' | 'dmz' | 'external' | 'management'
+
+// ── Firewall policy model ──────────────────────────────────────────────────────
+
+export type FWChain    = 'input' | 'forward' | 'output'
+export type FWProtocol = 'tcp' | 'udp' | 'icmp' | 'any'
+export type FWAction   = 'accept' | 'drop' | 'reject'
+export type FWZone     = NetworkZone | 'any'
+
+export interface FirewallRule {
+  id: string
+  enabled: boolean
+  chain: FWChain
+  srcZone: FWZone
+  dstZone: FWZone
+  protocol: FWProtocol
+  dstPort: string       // e.g. "80" or "80,443" or "" for any
+  action: FWAction
+  description: string
+}
+
+export interface FirewallPolicy {
+  defaultInput: FWAction
+  defaultForward: FWAction
+  defaultOutput: FWAction
+  rules: FirewallRule[]
+}
+
+// ── Device types ───────────────────────────────────────────────────────────────
+
 export type DeviceType =
   | 'workstation'
   | 'server'
@@ -10,7 +40,6 @@ export type DeviceType =
   | 'mail-server'
   | 'ids'
 
-export type NetworkZone = 'internal' | 'dmz' | 'external' | 'management'
 export type IPClass = 'A' | 'B' | 'C' | 'D'
 
 export interface DeviceData {
@@ -33,6 +62,8 @@ export interface DeviceData {
   // IDS/Suricata-only: which rules are loaded on this sensor
   selectedRuleIds: string[]
   customRules: CustomRuleEntry[]
+  // Firewall-only: nftables policy
+  firewallPolicy?: FirewallPolicy
 }
 
 export type RuleCategory = 'scanning' | 'brute-force' | 'web-attacks' | 'malware' | 'exfiltration' | 'dns' | 'custom'

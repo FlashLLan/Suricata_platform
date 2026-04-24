@@ -1,5 +1,5 @@
 import type { Node, Edge } from '@xyflow/react'
-import type { DeviceData } from '../types/lab'
+import type { DeviceData, FirewallPolicy, FirewallRule } from '../types/lab'
 
 function getData(n: Node): DeviceData {
   return n.data as unknown as DeviceData
@@ -12,118 +12,183 @@ function parsePorts(ports: string): number[] {
     .filter(p => !isNaN(p) && p > 0)
 }
 
+const LINE  = '─'.repeat(68)
+const THICK = '═'.repeat(72)
+
+// ── Policy-model path ──────────────────────────────────────────────────────────
+// Called when at least one firewall node has a FirewallPolicy configured.
+
+function ruleToNft(rule: FirewallRule): string {
+  if (!rule.enabled) return ''
+
+  const parts: string[] = []
+
+  if (rule.srcZone !== 'any') {
+    const setMap: Record<string, string> = {
+      internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
+    }
+    if (setMap[rule.srcZone]) {
+      parts.push(`ip saddr @${setMap[rule.srcZone]}`)
+    }
+  }
+
+  if (rule.dstZone !== 'any') {
+    const setMap: Record<string, string> = {
+      internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
+    }
+    if (setMap[rule.dstZone]) {
+      parts.push(`ip daddr @${setMap[rule.dstZone]}`)
+    }
+  }
+
+  if (rule.protocol !== 'any') {
+    parts.push(rule.protocol)
+    if (rule.dstPort && rule.protocol !== 'icmp') {
+      const ports = rule.dstPort.split(',').map(p => p.trim()).filter(Boolean)
+      if (ports.length === 1) {
+        parts.push(`dport ${ports[0]}`)
+      } else if (ports.length > 1) {
+        parts.push(`dport { ${ports.join(', ')} }`)
+      }
+    }
+  }
+
+  parts.push(rule.action)
+
+  const comment = rule.description ? `   # ${rule.description}` : ''
+  return `        ${parts.join(' ')}${comment}`
+}
+
+function generateFromPolicy(
+  L: string[],
+  policy: FirewallPolicy,
+  zones: Record<string, { ips: string[] }>,
+) {
+  // Zone address sets (only for zones referenced in rules or with IPs)
+  const referencedZones = new Set<string>()
+  for (const r of policy.rules) {
+    if (r.srcZone !== 'any' && r.srcZone !== 'external') referencedZones.add(r.srcZone)
+    if (r.dstZone !== 'any' && r.dstZone !== 'external') referencedZones.add(r.dstZone)
+  }
+  ;['internal', 'dmz', 'management'].forEach(z => {
+    if (zones[z]?.ips.length > 0) referencedZones.add(z)
+  })
+
+  const setName: Record<string, string> = {
+    internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
+  }
+
+  const activeZones = [...referencedZones].filter(z => zones[z]?.ips.length > 0)
+  if (activeZones.length > 0) {
+    L.push(`    # ${LINE}`)
+    L.push(`    # Zone address sets`)
+    L.push(`    # ${LINE}`)
+    L.push(``)
+    for (const zone of activeZones) {
+      const ips = zones[zone].ips
+      L.push(`    set ${setName[zone]} {`)
+      L.push(`        type ipv4_addr`)
+      if (ips.length > 1) L.push(`        flags interval`)
+      L.push(`        elements = { ${ips.join(', ')} }`)
+      L.push(`    }`)
+      L.push(``)
+    }
+  }
+
+  // Helper: emit a chain
+  function emitChain(
+    name: string,
+    hook: string,
+    priority: string,
+    defaultPolicy: string,
+    preamble: string[],
+    rules: FirewallRule[],
+    trailerComment: string,
+  ) {
+    L.push(`    # ${LINE}`)
+    L.push(`    # ${name} chain`)
+    L.push(`    # ${LINE}`)
+    L.push(``)
+    L.push(`    chain ${name.toLowerCase()} {`)
+    L.push(`        type filter hook ${hook} priority ${priority}; policy ${defaultPolicy};`)
+    L.push(``)
+    for (const line of preamble) L.push(line)
+    const chainRules = rules.filter(r => r.chain === name.toLowerCase() && r.enabled)
+    for (const rule of chainRules) {
+      const line = ruleToNft(rule)
+      if (line) L.push(line)
+    }
+    L.push(``)
+    L.push(`        # ${trailerComment} (default policy)`)
+    L.push(`    }`)
+    L.push(``)
+  }
+
+  emitChain(
+    'input', 'input', 'filter', policy.defaultInput,
+    [
+      `        ct state invalid drop                          # drop invalid packets`,
+      `        ct state { established, related } accept       # allow established sessions`,
+      `        iif "lo" accept                                # allow loopback`,
+      `        icmp type echo-request accept                  # allow ICMP ping`,
+      ``,
+    ],
+    policy.rules,
+    policy.defaultInput === 'drop' ? 'All other inbound: drop' : 'All other inbound: accept',
+  )
+
+  emitChain(
+    'forward', 'forward', 'filter', policy.defaultForward,
+    [
+      `        ct state invalid drop                          # drop invalid packets`,
+      `        ct state { established, related } accept       # allow established sessions`,
+      ``,
+    ],
+    policy.rules,
+    policy.defaultForward === 'drop' ? 'Everything else: DROP' : 'Everything else: ACCEPT',
+  )
+
+  L.push(`    # ${LINE}`)
+  L.push(`    # output chain`)
+  L.push(`    # ${LINE}`)
+  L.push(``)
+  L.push(`    chain output {`)
+  L.push(`        type filter hook output priority filter; policy ${policy.defaultOutput};`)
+  L.push(``)
+  const outputRules = policy.rules.filter(r => r.chain === 'output' && r.enabled)
+  for (const rule of outputRules) {
+    const line = ruleToNft(rule)
+    if (line) L.push(line)
+  }
+  L.push(`        # Firewall-originated traffic`)
+  L.push(`    }`)
+  L.push(``)
+}
+
+// ── Zone-inference path (fallback when no policy is configured) ────────────────
+
 interface ZoneData {
   ips: string[]
   servers: Array<{ label: string; ports: number[] }>
 }
 
-const LINE = '─'.repeat(68)
-const THICK = '═'.repeat(72)
-
-export function buildNftablesConfig(
-  projectName: string,
-  nodes: Node[],
-  edges: Edge[],
-): string {
-  const now = new Date().toISOString().slice(0, 10)
-
-  // ── Collect zone data ──────────────────────────────────────────────────────
-  const zones: Record<string, ZoneData> = {
-    internal:   { ips: [], servers: [] },
-    dmz:        { ips: [], servers: [] },
-    management: { ips: [], servers: [] },
-    external:   { ips: [], servers: [] },
-  }
-
-  const firewalls = nodes.filter(
-    n => getData(n).deviceType === 'firewall' && getData(n).ip,
-  )
-
-  for (const n of nodes) {
-    const d = getData(n)
-    if (!d.ip) continue
-    if (['firewall', 'router', 'attacker'].includes(d.deviceType)) continue
-    const zone = d.zone ?? 'internal'
-    if (!(zone in zones)) continue
-    zones[zone].ips.push(d.ip)
-    const ports = parsePorts(d.ports ?? '')
-    if (ports.length > 0) zones[zone].servers.push({ label: d.label, ports })
-  }
-
+function generateFromZones(
+  L: string[],
+  zones: Record<string, ZoneData>,
+) {
   const hasInternal   = zones.internal.ips.length > 0
   const hasDmz        = zones.dmz.ips.length > 0
   const hasManagement = zones.management.ips.length > 0
 
-  // Determine which zones each firewall bridges via edges
-  const nodeMap = new Map(nodes.map(n => [n.id, getData(n)]))
-  const fwZones = new Set<string>()
-  for (const fw of firewalls) {
-    for (const e of edges) {
-      const otherId = e.source === fw.id ? e.target
-                    : e.target === fw.id ? e.source
-                    : null
-      if (!otherId) continue
-      const other = nodeMap.get(otherId)
-      if (other?.zone) fwZones.add(other.zone)
-    }
-  }
-
-  // ── Firewall header note ───────────────────────────────────────────────────
-  let fwNote: string
-  if (firewalls.length === 0) {
-    fwNote = [
-      '# NOTE: No Firewall device was found in your topology.',
-      '#       This is a generic zone-based ruleset.',
-      '#       Deploy on the host that routes between your network segments.',
-    ].join('\n')
-  } else if (firewalls.length === 1) {
-    const fw = getData(firewalls[0])
-    fwNote = [
-      `# Firewall device: ${fw.label}  (${fw.ip})`,
-      `# Deploy this file on that host:  sudo nft -f <filename>`,
-    ].join('\n')
-  } else {
-    const list = firewalls.map(f => `${getData(f).label} (${getData(f).ip})`).join(', ')
-    fwNote = [
-      `# Firewall devices: ${list}`,
-      `# Deploy on each firewall host as appropriate for your segment.`,
-    ].join('\n')
-  }
-
-  const L: string[] = []
-
-  // ── File header ────────────────────────────────────────────────────────────
-  L.push(`#!/usr/sbin/nft -f`)
-  L.push(`# ${THICK}`)
-  L.push(`# Suricata Learning Platform — nftables ruleset`)
-  L.push(`# Project:   ${projectName}`)
-  L.push(`# Generated: ${now}`)
-  L.push(`# ${LINE.slice(0, 72)}`)
-  L.push(`# Apply:     sudo nft -f <this-file>`)
-  L.push(`# Verify:    sudo nft list ruleset`)
-  L.push(`# Flush all: sudo nft flush ruleset`)
-  L.push(`# ${LINE.slice(0, 72)}`)
-  L.push(fwNote)
-  L.push(``)
-  L.push(`flush ruleset`)
-  L.push(``)
-  L.push(`table inet filter {`)
-  L.push(``)
-
-  // ── Zone address sets ──────────────────────────────────────────────────────
   const namedZones = ['internal', 'dmz', 'management'] as const
   const setName: Record<string, string> = {
-    internal:   'INTERNAL',
-    dmz:        'DMZ',
-    management: 'MANAGEMENT',
+    internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
   }
-
   const activeNamedZones = namedZones.filter(z => zones[z].ips.length > 0)
 
   if (activeNamedZones.length > 0) {
     L.push(`    # ${LINE}`)
-    L.push(`    # Zone address sets`)
-    L.push(`    # Edit elements to match your real host IPs or CIDR ranges`)
+    L.push(`    # Zone address sets (inferred from topology — configure firewall policy for precise rules)`)
     L.push(`    # ${LINE}`)
     L.push(``)
     for (const zone of activeNamedZones) {
@@ -137,106 +202,64 @@ export function buildNftablesConfig(
     }
   }
 
-  // ── Input chain ────────────────────────────────────────────────────────────
+  // Input chain
   L.push(`    # ${LINE}`)
-  L.push(`    # Input chain — traffic destined for the firewall itself`)
+  L.push(`    # Input chain`)
   L.push(`    # ${LINE}`)
   L.push(``)
   L.push(`    chain input {`)
   L.push(`        type filter hook input priority filter; policy drop;`)
   L.push(``)
-  L.push(`        ct state invalid drop                          # drop invalid packets`)
-  L.push(`        ct state { established, related } accept       # allow established sessions`)
-  L.push(`        iif "lo" accept                                # allow loopback`)
-  L.push(`        icmp type echo-request accept                  # allow ICMP ping`)
-  L.push(`        icmpv6 type { nd-neighbor-solicit, nd-router-advert, nd-neighbor-advert } accept`)
+  L.push(`        ct state invalid drop`)
+  L.push(`        ct state { established, related } accept`)
+  L.push(`        iif "lo" accept`)
+  L.push(`        icmp type echo-request accept`)
   L.push(``)
-
-  if (hasManagement) {
-    L.push(`        # Management zone → firewall: SSH and HTTPS management access`)
-    L.push(`        ip saddr @MANAGEMENT tcp dport { 22, 443 } accept`)
-  }
-  if (hasInternal) {
-    L.push(`        # Internal zone → firewall: SSH admin access`)
-    L.push(`        ip saddr @INTERNAL tcp dport 22 accept`)
-  }
-
-  L.push(``)
-  L.push(`        # All other inbound traffic: drop (default policy)`)
+  if (hasManagement) L.push(`        ip saddr @MANAGEMENT tcp dport { 22, 443 } accept   # management access`)
+  if (hasInternal)   L.push(`        ip saddr @INTERNAL   tcp dport 22 accept             # internal SSH`)
   L.push(`    }`)
   L.push(``)
 
-  // ── Forward chain ──────────────────────────────────────────────────────────
+  // Forward chain
   L.push(`    # ${LINE}`)
-  L.push(`    # Forward chain — traffic passing through the firewall between zones`)
+  L.push(`    # Forward chain`)
   L.push(`    # ${LINE}`)
   L.push(``)
   L.push(`    chain forward {`)
   L.push(`        type filter hook forward priority filter; policy drop;`)
   L.push(``)
-  L.push(`        ct state invalid drop                          # drop invalid packets`)
-  L.push(`        ct state { established, related } accept       # allow established sessions`)
+  L.push(`        ct state invalid drop`)
+  L.push(`        ct state { established, related } accept`)
   L.push(``)
-
-  if (hasManagement) {
-    L.push(`        # Management → anywhere: full administrative access`)
-    L.push(`        ip saddr @MANAGEMENT accept`)
-    L.push(``)
-  }
-
+  if (hasManagement) { L.push(`        ip saddr @MANAGEMENT accept                          # management → anywhere`); L.push(``) }
   if (hasInternal) {
-    if (hasDmz) {
-      L.push(`        # Internal → DMZ: allow (clients accessing DMZ-hosted services)`)
-      L.push(`        ip saddr @INTERNAL ip daddr @DMZ accept`)
-      L.push(``)
-    }
-    L.push(`        # Internal → External: allow outbound (browsing, updates, DNS)`)
-    L.push(`        ip saddr @INTERNAL accept`)
+    if (hasDmz) { L.push(`        ip saddr @INTERNAL ip daddr @DMZ accept            # internal → DMZ`); L.push(``) }
+    L.push(`        ip saddr @INTERNAL accept                           # internal → external`)
     L.push(``)
   }
-
   if (hasDmz) {
-    L.push(`        # DMZ → External: allow (servers pulling package updates, DNS)`)
-    L.push(`        ip saddr @DMZ accept`)
+    L.push(`        ip saddr @DMZ accept                                # DMZ → external`)
     L.push(``)
-
-    // External → DMZ: only specific service ports configured on DMZ devices
     const dmzServers = zones.dmz.servers
     if (dmzServers.length > 0) {
-      L.push(`        # External → DMZ: allow only declared service ports`)
+      L.push(`        # External → DMZ: declared service ports only`)
       for (const s of dmzServers) {
-        const portExpr = s.ports.length === 1
-          ? s.ports[0].toString()
-          : `{ ${s.ports.join(', ')} }`
+        const portExpr = s.ports.length === 1 ? s.ports[0].toString() : `{ ${s.ports.join(', ')} }`
         L.push(`        # ${s.label}`)
         L.push(`        ip daddr @DMZ tcp dport ${portExpr} accept`)
       }
       L.push(``)
-    } else {
-      L.push(`        # External → DMZ: blocked (configure ports on DMZ devices and regenerate)`)
-      L.push(``)
     }
-
-    if (hasInternal) {
-      L.push(`        # DMZ → Internal: DROP (DMZ servers must never initiate inward)`)
-      L.push(`        ip saddr @DMZ ip daddr @INTERNAL drop`)
-      L.push(``)
-    }
+    if (hasInternal) { L.push(`        ip saddr @DMZ ip daddr @INTERNAL drop               # DMZ → internal: BLOCKED`); L.push(``) }
   }
-
-  if (hasManagement) {
-    L.push(`        # External → Management: DROP (management must never be internet-reachable)`)
-    L.push(`        ip daddr @MANAGEMENT drop`)
-    L.push(``)
-  }
-
-  L.push(`        # Everything else: DROP (default policy)`)
+  if (hasManagement) { L.push(`        ip daddr @MANAGEMENT drop                           # external → management: BLOCKED`); L.push(``) }
+  L.push(`        # Everything else: DROP`)
   L.push(`    }`)
   L.push(``)
 
-  // ── Output chain ───────────────────────────────────────────────────────────
+  // Output chain
   L.push(`    # ${LINE}`)
-  L.push(`    # Output chain — traffic originating from the firewall itself`)
+  L.push(`    # Output chain`)
   L.push(`    # ${LINE}`)
   L.push(``)
   L.push(`    chain output {`)
@@ -244,14 +267,108 @@ export function buildNftablesConfig(
   L.push(`        # Firewall-originated traffic is fully trusted`)
   L.push(`    }`)
   L.push(``)
+}
+
+// ── Public entry point ─────────────────────────────────────────────────────────
+
+export function buildNftablesConfig(
+  projectName: string,
+  nodes: Node[],
+  edges: Edge[],
+): string {
+  void edges  // retained for future zone-connectivity detection
+  const now = new Date().toISOString().slice(0, 10)
+
+  const firewalls = nodes.filter(
+    n => getData(n).deviceType === 'firewall' && getData(n).ip,
+  )
+
+  // Find the first firewall with a configured policy
+  const configuredFw = firewalls.find(n => getData(n).firewallPolicy != null)
+  const policy: FirewallPolicy | undefined = configuredFw
+    ? getData(configuredFw).firewallPolicy
+    : undefined
+
+  // Collect zone data (used by both paths)
+  const zones: Record<string, ZoneData> = {
+    internal: { ips: [], servers: [] }, dmz: { ips: [], servers: [] },
+    management: { ips: [], servers: [] }, external: { ips: [], servers: [] },
+  }
+  for (const n of nodes) {
+    const d = getData(n)
+    if (!d.ip) continue
+    if (['firewall', 'router', 'attacker'].includes(d.deviceType)) continue
+    const zone = d.zone ?? 'internal'
+    if (!(zone in zones)) continue
+    zones[zone].ips.push(d.ip)
+    const ports = parsePorts(d.ports ?? '')
+    if (ports.length > 0) zones[zone].servers.push({ label: d.label, ports })
+  }
+
+  // ── Firewall header note ──────────────────────────────────────────────────
+  let fwNote: string
+  if (firewalls.length === 0) {
+    fwNote = [
+      '# NOTE: No Firewall device was found in your topology.',
+      '#       This is a generic zone-based ruleset.',
+      '#       Deploy on the host that routes between your network segments.',
+    ].join('\n')
+  } else if (firewalls.length === 1) {
+    const fw = getData(firewalls[0])
+    fwNote = [
+      `# Firewall device: ${fw.label}  (${fw.ip})`,
+      policy
+        ? `# Policy configured via Firewall Policy panel — ${policy.rules.filter(r => r.enabled).length} active rule(s)`
+        : `# NOTE: No policy configured yet — output is zone-inferred. Open the firewall`,
+      policy
+        ? `# Apply this file on that host:  sudo nft -f <filename>`
+        : `#       node in the canvas, open "Firewall Policy", configure rules, then re-export.`,
+    ].join('\n')
+  } else {
+    const list = firewalls.map(f => `${getData(f).label} (${getData(f).ip})`).join(', ')
+    fwNote = [
+      `# Firewall devices: ${list}`,
+      configuredFw
+        ? `# Using policy from: ${getData(configuredFw).label}`
+        : `# NOTE: No policy configured on any firewall — output is zone-inferred.`,
+      `# Deploy on each firewall host as appropriate for your segment.`,
+    ].join('\n')
+  }
+
+  const L: string[] = []
+
+  // File header
+  L.push(`#!/usr/sbin/nft -f`)
+  L.push(`# ${'═'.repeat(72)}`)
+  L.push(`# Suricata Learning Platform — nftables ruleset`)
+  L.push(`# Project:   ${projectName}`)
+  L.push(`# Generated: ${now}`)
+  L.push(`# ${'─'.repeat(72)}`)
+  L.push(`# Apply:     sudo nft -f <this-file>`)
+  L.push(`# Verify:    sudo nft list ruleset`)
+  L.push(`# Flush all: sudo nft flush ruleset`)
+  L.push(`# ${'─'.repeat(72)}`)
+  L.push(fwNote)
+  L.push(``)
+  L.push(`flush ruleset`)
+  L.push(``)
+  L.push(`table inet filter {`)
+  L.push(``)
+
+  if (policy) {
+    generateFromPolicy(L, policy, zones)
+  } else {
+    generateFromZones(L, zones)
+  }
+
   L.push(`}`)
   L.push(``)
 
-  // ── Optional logging block ─────────────────────────────────────────────────
-  L.push(`# ${LINE.slice(0, 72)}`)
+  // Optional logging block
+  L.push(`# ${'─'.repeat(72)}`)
   L.push(`# Optional: log dropped forward packets for debugging`)
   L.push(`# Uncomment, reload, then: sudo journalctl -k -f | grep "nft drop"`)
-  L.push(`# ${LINE.slice(0, 72)}`)
+  L.push(`# ${'─'.repeat(72)}`)
   L.push(``)
   L.push(`# table inet logging {`)
   L.push(`#     chain forward_log {`)
