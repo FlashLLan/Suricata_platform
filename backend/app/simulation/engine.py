@@ -37,6 +37,19 @@ _SKIP_ZONE_CHECK: set[str] = {"normal-browsing", "http-c2-beacon", "dns-tunnelin
 # Infrastructure device types that are allowed to bridge zones
 _GATEWAY_DEVICE_TYPES: set[str] = {"router", "firewall"}
 
+# ─── Scenario flow info (for nftables evaluation) ────────────────────────────
+# Maps scenario_id → primary protocol and dst_port used in the attack flow.
+_SCENARIO_FLOW_INFO: dict[str, dict] = {
+    "ssh-brute-force":  {"protocol": "tcp",  "dst_port": 22},
+    "http-brute-force": {"protocol": "tcp",  "dst_port": 80},
+    "sql-injection":    {"protocol": "tcp",  "dst_port": 80},
+    "nmap-syn-scan":    {"protocol": "tcp",  "dst_port": None},   # scans many ports
+    "ping-sweep":       {"protocol": "icmp", "dst_port": None},
+    "dns-tunneling":    {"protocol": "udp",  "dst_port": 53},
+    "http-c2-beacon":   {"protocol": "tcp",  "dst_port": 80},
+    "normal-browsing":  {"protocol": "tcp",  "dst_port": 80},
+}
+
 # ─── Scenario prerequisites ───────────────────────────────────────────────────
 # Maps scenario_id → what the primary target must expose for the attack to make sense.
 #   required_ports:  at least one must appear in the target's configured ports
@@ -102,6 +115,9 @@ class SimulationResult:
     ids_node_labels: list[str] = field(default_factory=list)  # labels of observing IDS nodes
     # Event timeline
     timeline: list[dict] = field(default_factory=list)
+    # nftables firewall policy evaluation
+    nftables_decision: Optional[dict] = None   # see _evaluate_nftables_policy
+    nftables_blocked: bool = False
     # Simulation mode metadata
     mode: str = "python"              # "python" | "suricata"
     suricata_fallback: bool = False   # suricata was requested but fell back to python
@@ -237,11 +253,136 @@ def _check_zone_policy(
             )
 
 
+def _fw_rule_matches_flow(
+    rule: dict,
+    src_zone: str,
+    dst_zone: str,
+    protocol: str,
+    dst_port: Optional[int],
+) -> bool:
+    """Return True if a single firewall policy rule applies to this flow."""
+    if not rule.get("enabled", True):
+        return False
+    if rule.get("chain") != "forward":
+        return False   # only forward chain matters for pass-through attack traffic
+
+    rule_src = rule.get("srcZone", "any")
+    rule_dst = rule.get("dstZone", "any")
+    if rule_src != "any" and rule_src != src_zone:
+        return False
+    if rule_dst != "any" and rule_dst != dst_zone:
+        return False
+
+    rule_proto = rule.get("protocol", "any")
+    if rule_proto != "any" and rule_proto != protocol:
+        return False
+
+    rule_port_str = rule.get("dstPort", "")
+    if rule_port_str and dst_port is not None:
+        rule_ports = {int(p.strip()) for p in rule_port_str.split(",") if p.strip().isdigit()}
+        if rule_ports and dst_port not in rule_ports:
+            return False
+
+    return True
+
+
+def _evaluate_nftables_policy(
+    scenario_id: str,
+    topology: dict,
+    visited_node_ids: set[str],
+    attacker_node: dict,
+    target_nodes: list[dict],
+) -> tuple[Optional[dict], bool]:
+    """
+    Evaluate the nftables FirewallPolicy on each firewall node the attack passes through.
+
+    Returns (decision_dict, blocked).
+    decision_dict is None if no configured firewall is on the path.
+    """
+    # Find firewall nodes on the attack path that have a configured policy
+    fw_nodes = [
+        n for n in topology.get("nodes", [])
+        if n.get("data", {}).get("deviceType") == "firewall"
+        and n["id"] in visited_node_ids
+        and n.get("data", {}).get("firewallPolicy")
+    ]
+    if not fw_nodes:
+        return None, False
+
+    flow = _SCENARIO_FLOW_INFO.get(scenario_id, {"protocol": "tcp", "dst_port": None})
+    attack_protocol = flow["protocol"]
+    attack_dst_port = flow["dst_port"]
+
+    attacker_zone  = attacker_node.get("data", {}).get("zone", "external")
+    primary_target = target_nodes[0] if target_nodes else None
+    target_zone    = primary_target.get("data", {}).get("zone", "internal") if primary_target else "internal"
+    target_label   = primary_target.get("data", {}).get("label", "target") if primary_target else "target"
+
+    port_str = f"/{attack_dst_port}" if attack_dst_port else ""
+    flow_desc = f"{attacker_zone} → {target_zone} ({attack_protocol}{port_str})"
+
+    last_allow_decision: Optional[dict] = None
+
+    for fw_node in fw_nodes:
+        fw_data = fw_node.get("data", {})
+        policy  = fw_data.get("firewallPolicy", {})
+        fw_label = fw_data.get("label", "Firewall")
+        fw_ip    = fw_data.get("ip", "")
+
+        rules           = policy.get("rules", [])
+        default_forward = policy.get("defaultForward", "drop")
+
+        matched_rule: Optional[dict] = None
+        action = default_forward
+
+        for rule in rules:
+            if _fw_rule_matches_flow(rule, attacker_zone, target_zone, attack_protocol, attack_dst_port):
+                matched_rule = rule
+                action = rule.get("action", "drop")
+                break
+
+        rule_desc = ""
+        if matched_rule:
+            rule_desc = matched_rule.get("description", "") or (
+                f"{matched_rule.get('srcZone','any')} → {matched_rule.get('dstZone','any')} "
+                f"{matched_rule.get('protocol','any')}"
+            )
+        else:
+            rule_desc = f"default forward policy: {default_forward}"
+
+        blocked = action in ("drop", "reject")
+
+        decision = {
+            "firewall_label": fw_label,
+            "firewall_ip": fw_ip,
+            "action": action,
+            "matched_rule_description": rule_desc,
+            "blocked": blocked,
+            "explanation": (
+                f"Firewall '{fw_label}' {'BLOCKED' if blocked else 'allowed'} this traffic. "
+                f"Flow: {flow_desc}. "
+                f"Matching rule: \"{rule_desc}\". "
+                + (f"The attack was stopped — {target_label} never received this traffic."
+                   if blocked
+                   else f"Traffic continued towards {target_label}.")
+            ),
+        }
+
+        if blocked:
+            return decision, True
+
+        last_allow_decision = decision
+
+    return last_allow_decision, False
+
+
 def _build_timeline(
     attack_path: list[list[str]],
     topology: dict,
     defense_impacts: list[dict],
     attack_blocked: bool,
+    nftables_decision: Optional[dict],
+    nftables_blocked: bool,
     ids_visible: bool,
     ids_node_labels: list[str],
     rule_results: list[RuleMatchResult],
@@ -272,8 +413,23 @@ def _build_timeline(
             "to_label":   to_label,
         })
 
-    # ── 2. Defense evaluation ─────────────────────────────────────────────────
-    if not defense_impacts:
+    # ── 2. nftables firewall policy evaluation ───────────────────────────────
+    if nftables_decision:
+        events.append({
+            "type":       "nftables_blocked" if nftables_blocked else "nftables_allowed",
+            "label":      (
+                f"Firewall '{nftables_decision['firewall_label']}': BLOCKED"
+                if nftables_blocked
+                else f"Firewall '{nftables_decision['firewall_label']}': allowed"
+            ),
+            "detail":     nftables_decision["explanation"],
+            "node_label": nftables_decision["firewall_label"],
+        })
+
+    # ── 3. Defense evaluation (only when nftables didn't block) ──────────────
+    if nftables_blocked:
+        pass  # skip host defense evaluation — attack already stopped
+    elif not defense_impacts:
         events.append({
             "type":   "no_defense",
             "label":  "No defenses configured",
@@ -429,17 +585,23 @@ def run_simulation(
     home_ips, external_ips = _resolve_networks(topology)
     home_net_str = ", ".join(home_ips) if home_ips else "192.168.1.0/24"
 
-    # ── 5. Evaluate defenses ─────────────────────────────────────────────────
-    defense_impacts, attack_blocked = evaluate_defenses(scenario_id, target_nodes)
+    # ── 5. Evaluate nftables firewall policy ─────────────────────────────────
+    nftables_decision, nftables_blocked = _evaluate_nftables_policy(
+        scenario_id, topology, visited_node_ids, attacker_node, target_nodes
+    )
 
-    # ── 6. Build traffic packets ──────────────────────────────────────────────
+    # ── 6. Evaluate host defenses ─────────────────────────────────────────────
+    defense_impacts, defense_blocked = evaluate_defenses(scenario_id, target_nodes)
+    attack_blocked = nftables_blocked or defense_blocked
+
+    # ── 7. Build traffic packets ──────────────────────────────────────────────
     primary_target = target_ips[0]
     packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
 
-    # ── 7. Check IDS visibility ───────────────────────────────────────────────
+    # ── 8. Check IDS visibility ───────────────────────────────────────────────
     ids_visible, ids_node_labels = _find_ids_visibility(topology, visited_node_ids)
 
-    # ── 8. Parse rules ────────────────────────────────────────────────────────
+    # ── 9. Parse rules ────────────────────────────────────────────────────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
     parse_errors: list[str] = []
     for raw in rule_texts:
@@ -505,19 +667,27 @@ def run_simulation(
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
 
-    # ── 9. Build event timeline ───────────────────────────────────────────────
+    # ── 10. Build event timeline ──────────────────────────────────────────────
     timeline = _build_timeline(
         attack_path=attack_path,
         topology=topology,
         defense_impacts=defense_impacts,
         attack_blocked=attack_blocked,
+        nftables_decision=nftables_decision,
+        nftables_blocked=nftables_blocked,
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
         rule_results=results,
     )
 
-    # ── 10. Build summary ─────────────────────────────────────────────────────
-    if attack_blocked:
+    # ── 11. Build summary ─────────────────────────────────────────────────────
+    if nftables_blocked and nftables_decision:
+        summary = (
+            f"Attack blocked by firewall '{nftables_decision['firewall_label']}' policy. "
+            f"Rule: \"{nftables_decision['matched_rule_description']}\". "
+            f"Traffic never reached {', '.join(n['data'].get('label', 'target') for n in target_nodes)}."
+        )
+    elif attack_blocked:
         summary = (
             f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
             f"{triggered} of {total} IDS rule(s) also triggered."
@@ -571,6 +741,8 @@ def run_simulation(
         defense_impacts=defense_impacts,
         attack_blocked=attack_blocked,
         attack_reached_target=not attack_blocked,
+        nftables_decision=nftables_decision,
+        nftables_blocked=nftables_blocked,
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
         timeline=timeline,

@@ -3,13 +3,13 @@ import {
   X, Play, ChevronDown, ChevronRight, ShieldCheck, ShieldOff,
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
-  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft, Server, FlaskConical,
+  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft, Server, FlaskConical, Flame,
 } from 'lucide-react'
 import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
 import { runSimulation, checkStatus } from '../../api/simulation'
 import type { DockerStatus } from '../../api/simulation'
 import type {
-  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry, SimulationRun,
+  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry, SimulationRun, NftablesDecision,
 } from '../../types/lab'
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData } from '../../types/lab'
@@ -109,6 +109,8 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
   const detected = result.triggered_count > 0
   const idsVisible = result.ids_visible ?? true
   const hasPath = result.attack_path && result.attack_path.length > 0
+  const nftDec = result.nftables_decision as NftablesDecision | undefined
+  const nftBlocked = result.nftables_blocked ?? false
 
   const verdictColor = blocked
     ? 'border-green-700/40 bg-green-950/20'
@@ -128,13 +130,15 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
       ? 'Attack Detected'
       : 'Attack Undetected'
 
-  const verdictSubtitle = blocked
-    ? 'Defenses stopped the attack before it reached the target.'
-    : detected
-      ? 'The attack reached the target and Suricata triggered an alert.'
-      : result.attack_reached_target
-        ? 'The attack reached the target without triggering any rules.'
-        : 'Attack result could not be fully determined.'
+  const verdictSubtitle = nftBlocked && nftDec
+    ? `Firewall '${nftDec.firewall_label}' policy blocked the attack before it reached the target.`
+    : blocked
+      ? 'Host defenses stopped the attack before it reached the target.'
+      : detected
+        ? 'The attack reached the target and Suricata triggered an alert.'
+        : result.attack_reached_target
+          ? 'The attack reached the target without triggering any rules.'
+          : 'Attack result could not be fully determined.'
 
   // Causality chain steps
   type StepStatus = 'ok' | 'warn' | 'fail' | 'neutral'
@@ -151,14 +155,23 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
         : 'No route found',
       status: hasPath ? 'ok' : 'fail',
     },
+    ...(nftDec ? [{
+      label: 'Firewall Policy',
+      detail: nftBlocked
+        ? `${nftDec.firewall_label}: BLOCKED — ${nftDec.matched_rule_description}`
+        : `${nftDec.firewall_label}: allowed — ${nftDec.matched_rule_description}`,
+      status: (nftBlocked ? 'ok' : 'warn') as StepStatus,
+    }] : []),
     {
-      label: 'Defenses',
-      detail: blocked
-        ? 'Traffic blocked before delivery'
-        : result.defense_impacts && result.defense_impacts.length > 0
-          ? 'Defenses evaluated — traffic passed'
-          : 'No defenses configured',
-      status: blocked ? 'ok' : result.defense_impacts && result.defense_impacts.length > 0 ? 'warn' : 'neutral',
+      label: 'Host Defenses',
+      detail: nftBlocked
+        ? 'Not evaluated — firewall blocked the attack'
+        : blocked
+          ? 'Traffic blocked before delivery'
+          : result.defense_impacts && result.defense_impacts.length > 0
+            ? 'Defenses evaluated — traffic passed'
+            : 'No defenses configured',
+      status: nftBlocked ? 'neutral' : blocked ? 'ok' : result.defense_impacts && result.defense_impacts.length > 0 ? 'warn' : 'neutral',
     },
     {
       label: 'IDS Coverage',
@@ -336,6 +349,10 @@ function timelineMeta(type: TimelineEvent['type']): TLMeta {
   switch (type) {
     case 'hop':
       return { Icon: ArrowRight,    iconClass: 'text-gray-500',   rowClass: 'border-gray-700/30 bg-gray-800/20' }
+    case 'nftables_blocked':
+      return { Icon: Flame,         iconClass: 'text-orange-400', rowClass: 'border-orange-700/40 bg-orange-950/20', badge: 'FW DROP',  badgeClass: 'bg-orange-900/60 text-orange-300' }
+    case 'nftables_allowed':
+      return { Icon: Flame,         iconClass: 'text-gray-500',   rowClass: 'border-gray-700/20 bg-gray-800/10',   badge: 'FW PASS',  badgeClass: 'bg-gray-700/60 text-gray-400' }
     case 'defense_blocked':
       return { Icon: ShieldCheck,   iconClass: 'text-green-400',  rowClass: 'border-green-700/30 bg-green-950/20',  badge: 'BLOCKED',  badgeClass: 'bg-green-900/60 text-green-300' }
     case 'defense_passed':

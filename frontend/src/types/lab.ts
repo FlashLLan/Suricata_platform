@@ -139,6 +139,8 @@ export interface DefenseImpact {
 
 export type TimelineEventType =
   | 'hop'
+  | 'nftables_blocked'
+  | 'nftables_allowed'
   | 'defense_blocked'
   | 'defense_passed'
   | 'no_defense'
@@ -162,6 +164,15 @@ export interface TimelineEvent {
   sid?: string
 }
 
+export interface NftablesDecision {
+  firewall_label: string
+  firewall_ip: string
+  action: string
+  matched_rule_description: string
+  blocked: boolean
+  explanation: string
+}
+
 export interface SimulationResult {
   scenario: string
   total_packets: number
@@ -174,8 +185,11 @@ export interface SimulationResult {
   target_ips?: string[]
   attack_path?: string[][]  // list of [src_ip, dst_ip] hops for animation
   defense_impacts?: DefenseImpact[]
-  attack_blocked?: boolean  // was the attack stopped by defenses before IDS?
+  attack_blocked?: boolean  // was the attack stopped (by firewall or host defenses)?
   attack_reached_target?: boolean
+  // nftables firewall policy
+  nftables_decision?: NftablesDecision
+  nftables_blocked?: boolean
   // IDS visibility
   ids_visible?: boolean           // was any IDS sensor on the attack path?
   ids_node_labels?: string[]      // labels of IDS nodes that observed the traffic
