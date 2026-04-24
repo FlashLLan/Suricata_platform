@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import {
   X, Download, Copy, Check, FileText, Settings, Terminal,
-  ChevronRight, ChevronLeft, Server, Network, Shield, Monitor,
+  ChevronRight, ChevronLeft, Network, Shield,
 } from 'lucide-react'
-import type { Node } from '@xyflow/react'
+import type { Node, Edge } from '@xyflow/react'
 import type { ActiveRule, DeviceData } from '../../types/lab'
 import { PREDEFINED_RULES } from '../../data/rules'
-import { getHomeIPs, resolveHomeNet } from '../../utils/exportHelpers'
+import { resolveHomeNet } from '../../utils/exportHelpers'
+import { buildNftablesConfig } from '../../utils/nftablesGenerator'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -14,6 +15,7 @@ interface Props {
   projectName: string
   activeRules: ActiveRule[]
   nodes: Node[]
+  edges: Edge[]
   onClose: () => void
 }
 
@@ -43,7 +45,7 @@ const DEFAULT_SETUP: EnvSetup = {
   logFormat: 'both',
 }
 
-type ExportTab = 'rules' | 'yaml' | 'inventory' | 'guide'
+type ExportTab = 'rules' | 'yaml' | 'inventory' | 'nftables' | 'guide'
 
 // ─── Topology helpers ─────────────────────────────────────────────────────────
 
@@ -955,10 +957,11 @@ function SetupStep({
 // ─── Step 2: Output tabs ──────────────────────────────────────────────────────
 
 const TABS: { id: ExportTab; label: string; icon: typeof FileText }[] = [
-  { id: 'rules',     label: 'Rules File',    icon: FileText },
-  { id: 'yaml',      label: 'suricata.yaml', icon: Settings },
+  { id: 'rules',     label: 'Rules File',       icon: FileText },
+  { id: 'yaml',      label: 'suricata.yaml',    icon: Settings },
   { id: 'inventory', label: 'Network Inventory', icon: Network },
-  { id: 'guide',     label: 'Deployment Guide',  icon: Terminal },
+  { id: 'nftables',  label: 'nftables',         icon: Shield  },
+  { id: 'guide',     label: 'Deployment Guide', icon: Terminal },
 ]
 
 function TabBar({ active, onChange, ruleBadge }: {
@@ -999,23 +1002,26 @@ function OutputStep({
   projectName,
   activeRules,
   nodes,
+  edges,
   setup,
   onBack,
 }: {
   projectName: string
   activeRules: ActiveRule[]
   nodes: Node[]
+  edges: Edge[]
   setup: EnvSetup
   onBack: () => void
 }) {
   const [tab, setTab] = useState<ExportTab>('rules')
   const slug = projectName.toLowerCase().replace(/\s+/g, '-') || 'lab'
 
-  const nodeRuleCount = collectNodeRules(nodes).reduce((s, g) => s + g.rules.length, 0)
-  const rulesContent    = buildRulesFile(projectName, activeRules, nodes, setup)
-  const yamlContent     = buildYaml(nodes, setup)
+  const nodeRuleCount    = collectNodeRules(nodes).reduce((s, g) => s + g.rules.length, 0)
+  const rulesContent     = buildRulesFile(projectName, activeRules, nodes, setup)
+  const yamlContent      = buildYaml(nodes, setup)
   const inventoryContent = buildInventoryText(projectName, nodes, setup)
-  const guideContent    = buildDeploymentGuide(setup)
+  const nftablesContent  = buildNftablesConfig(projectName, nodes, edges)
+  const guideContent     = buildDeploymentGuide(setup)
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
@@ -1023,12 +1029,13 @@ function OutputStep({
 
       {/* Content area */}
       <div className="flex-1 min-h-0 flex flex-col gap-2">
-        {(tab === 'rules' || tab === 'yaml' || tab === 'inventory' || tab === 'guide') && (() => {
+        {(tab === 'rules' || tab === 'yaml' || tab === 'inventory' || tab === 'nftables' || tab === 'guide') && (() => {
           const [content, filename, color] =
-            tab === 'rules'     ? [rulesContent,     `${slug}.rules`,            'text-green-300']
-            : tab === 'yaml'    ? [yamlContent,      'suricata-vars.yaml',        'text-amber-300']
-            : tab === 'inventory' ? [inventoryContent, `${slug}-inventory.txt`,   'text-cyan-300']
-            :                     [guideContent,     `${slug}-deploy-guide.sh`,  'text-emerald-300']
+            tab === 'rules'      ? [rulesContent,     `${slug}.rules`,            'text-green-300']
+            : tab === 'yaml'     ? [yamlContent,      'suricata-vars.yaml',       'text-amber-300']
+            : tab === 'inventory'? [inventoryContent, `${slug}-inventory.txt`,    'text-cyan-300']
+            : tab === 'nftables' ? [nftablesContent,  `${slug}-firewall.nft`,     'text-orange-300']
+            :                     [guideContent,      `${slug}-deploy-guide.sh`,  'text-emerald-300']
 
           return (
             <>
@@ -1064,7 +1071,7 @@ function OutputStep({
 
 // ─── Modal root ───────────────────────────────────────────────────────────────
 
-export default function ExportModal({ projectName, activeRules, nodes, onClose }: Props) {
+export default function ExportModal({ projectName, activeRules, nodes, edges, onClose }: Props) {
   const [step, setStep]     = useState<1 | 2>(1)
   const [setup, setSetup]   = useState<EnvSetup>(DEFAULT_SETUP)
 
@@ -1103,6 +1110,7 @@ export default function ExportModal({ projectName, activeRules, nodes, onClose }
               projectName={projectName}
               activeRules={activeRules}
               nodes={nodes}
+              edges={edges}
               setup={setup}
               onBack={() => setStep(1)}
             />

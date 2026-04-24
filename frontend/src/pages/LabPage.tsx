@@ -11,7 +11,7 @@ import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle, Download,
 
 import { getProject, updateProject, type Project } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
-import { ipNetworkPrefix, getEdgeKind, type EdgeKind, type EdgeSemantics } from '../utils/edgeSemantics'
+import { getEdgeKind, type EdgeKind } from '../utils/edgeSemantics'
 
 import DeviceNode from '../components/lab/DeviceNode'
 import DevicePalette from '../components/lab/DevicePalette'
@@ -805,6 +805,7 @@ export default function LabPage() {
           projectName={project.name}
           activeRules={activeRules}
           nodes={nodes}
+          edges={edges}
           onClose={() => setShowExport(false)}
         />
       )}
