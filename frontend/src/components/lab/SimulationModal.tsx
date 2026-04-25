@@ -108,6 +108,7 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
   const blocked = result.attack_blocked
   const detected = result.triggered_count > 0
   const idsVisible = result.ids_visible ?? true
+  const idsDownstream = result.ids_downstream_labels ?? []
   const hasPath = result.attack_path && result.attack_path.length > 0
   const nftDec = result.nftables_decision as NftablesDecision | undefined
   const nftBlocked = result.nftables_blocked ?? false
@@ -175,27 +176,41 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
     },
     {
       label: 'IDS Coverage',
-      detail: idsVisible
-        ? `Monitored by ${result.ids_node_labels?.join(', ') || 'IDS'}`
-        : 'Traffic not visible to any IDS sensor',
-      status: idsVisible ? 'ok' : 'warn',
+      detail: idsVisible && idsDownstream.length > 0
+        ? `${result.ids_node_labels?.join(', ')} upstream (observing); ${idsDownstream.join(', ')} downstream (blind — fw dropped first)`
+        : idsVisible
+          ? `${nftBlocked ? 'Upstream — ' : ''}Monitored by ${result.ids_node_labels?.join(', ') || 'IDS'}`
+          : idsDownstream.length > 0
+            ? `Downstream only — traffic dropped before reaching ${idsDownstream.join(', ')}`
+            : 'Traffic not visible to any IDS sensor',
+      status: idsVisible ? 'ok' : idsDownstream.length > 0 ? 'warn' : 'warn',
     },
     {
       label: 'Detection',
-      detail: blocked
-        ? 'No packets reached IDS (blocked)'
-        : !idsVisible
-          ? 'IDS blind — rules not evaluated'
-          : result.results.length === 0
-            ? 'No rules loaded'
-            : `${result.triggered_count} of ${result.results.length} rule(s) fired`,
-      status: blocked
-        ? 'neutral'
-        : !idsVisible || result.results.length === 0
-          ? 'warn'
-          : detected
-            ? 'ok'
-            : 'fail',
+      detail: nftBlocked && idsVisible
+        ? `Upstream IDS alerted: ${result.triggered_count} of ${result.results.length} rule(s) fired (attack was also blocked)`
+        : nftBlocked && !idsVisible
+          ? idsDownstream.length > 0
+            ? 'Downstream IDS had no visibility — traffic stopped at firewall'
+            : 'No IDS coverage — firewall was the only defense'
+          : blocked
+            ? 'Not evaluated — attack blocked by host defenses'
+            : !idsVisible
+              ? 'IDS blind — rules not evaluated'
+              : result.results.length === 0
+                ? 'No rules loaded'
+                : `${result.triggered_count} of ${result.results.length} rule(s) fired`,
+      status: nftBlocked && idsVisible
+        ? (detected ? 'ok' : 'neutral')
+        : nftBlocked
+          ? 'neutral'
+          : blocked
+            ? 'neutral'
+            : !idsVisible || result.results.length === 0
+              ? 'warn'
+              : detected
+                ? 'ok'
+                : 'fail',
     },
   ]
 

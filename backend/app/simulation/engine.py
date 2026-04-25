@@ -111,8 +111,9 @@ class SimulationResult:
     attack_blocked: bool = False
     attack_reached_target: bool = True
     # IDS visibility
-    ids_visible: bool = True          # was any IDS sensor on the attack path?
-    ids_node_labels: list[str] = field(default_factory=list)  # labels of observing IDS nodes
+    ids_visible: bool = True          # upstream IDS sensor(s) observed the traffic?
+    ids_node_labels: list[str] = field(default_factory=list)  # labels of upstream (observing) IDS nodes
+    ids_downstream_labels: list[str] = field(default_factory=list)  # IDS nodes blind due to FW block
     # Event timeline
     timeline: list[dict] = field(default_factory=list)
     # nftables firewall policy evaluation
@@ -391,6 +392,7 @@ def _build_timeline(
     nftables_blocked: bool,
     ids_visible: bool,
     ids_node_labels: list[str],
+    ids_downstream_labels: list[str],
     rule_results: list[RuleMatchResult],
 ) -> list[dict]:
     """Build a step-by-step narrative timeline of the simulation."""
@@ -460,33 +462,57 @@ def _build_timeline(
                 "node_label": impact.get("device_label", ""),
             })
 
-    # ── 3. IDS visibility (skip if attack already blocked) ────────────────────
-    if not attack_blocked:
-        if ids_visible:
-            label_str = ", ".join(ids_node_labels) if ids_node_labels else "IDS"
-            events.append({
-                "type":       "ids_observed",
-                "label":      f"{label_str} observed the traffic",
-                "detail":     (
-                    f"{label_str} has a monitoring link to a node on the attack path — "
-                    "Suricata rule evaluation applies."
-                ),
-                "node_label": label_str,
-            })
+    # ── 3. IDS visibility ─────────────────────────────────────────────────────
+    # Upstream IDS sensors observed the traffic before the firewall acted on it.
+    # Downstream IDS sensors are blind when the firewall blocked — traffic never arrived.
+    if ids_visible:  # upstream IDS present
+        label_str = ", ".join(ids_node_labels)
+        if nftables_blocked:
+            detail = (
+                f"{label_str} is positioned before the blocking firewall and captured "
+                "the attack flow. Suricata rule evaluation applies for this sensor."
+            )
         else:
-            no_sensor = not ids_node_labels
-            events.append({
-                "type":   "ids_blind",
-                "label":  "IDS did not observe traffic",
-                "detail": (
-                    "No Suricata IDS sensor is deployed in this topology."
-                    if no_sensor else
-                    "An IDS sensor exists but is not connected to any node the attack passes through."
-                ),
-            })
+            detail = (
+                f"{label_str} has a monitoring link to a node on the attack path — "
+                "Suricata rule evaluation applies."
+            )
+        events.append({
+            "type":       "ids_observed",
+            "label":      f"{label_str} observed the traffic",
+            "detail":     detail,
+            "node_label": label_str,
+        })
+    elif not ids_downstream_labels:
+        # No IDS anywhere on path
+        no_sensor = not any(
+            n.get("data", {}).get("deviceType") == "ids"
+            for n in topology.get("nodes", [])
+        )
+        events.append({
+            "type":   "ids_blind",
+            "label":  "IDS did not observe traffic",
+            "detail": (
+                "No Suricata IDS sensor is deployed in this topology."
+                if no_sensor else
+                "An IDS sensor exists but is not connected to any node the attack passes through."
+            ),
+        })
 
-    # ── 4. Rule evaluation (only when IDS visible and attack not blocked) ─────
-    if not attack_blocked and ids_visible:
+    if ids_downstream_labels and nftables_blocked:
+        label_str = ", ".join(ids_downstream_labels)
+        events.append({
+            "type":       "ids_blind",
+            "label":      f"{label_str} had no visibility — downstream of firewall",
+            "detail":     (
+                f"{label_str} is positioned after the blocking firewall. "
+                "The attack was dropped before traffic could reach this sensor's segment."
+            ),
+            "node_label": label_str,
+        })
+
+    # ── 4. Rule evaluation (when upstream IDS observed the traffic) ───────────
+    if ids_visible:
         fired_rules  = [r for r in rule_results if r.fired]
         missed_rules = [r for r in rule_results if not r.fired]
         for r in fired_rules:
@@ -506,11 +532,24 @@ def _build_timeline(
 
     # ── 5. Outcome ────────────────────────────────────────────────────────────
     if attack_blocked:
-        events.append({
-            "type":   "outcome_blocked",
-            "label":  "Attack stopped by defenses",
-            "detail": "The attack was blocked before reaching its target — no traffic delivered.",
-        })
+        upstream_fired = ids_visible and any(r.fired for r in rule_results)
+        if nftables_blocked and upstream_fired:
+            fired_count = sum(1 for r in rule_results if r.fired)
+            events.append({
+                "type":   "outcome_blocked",
+                "label":  f"Attack blocked — upstream IDS also alerted ({fired_count} rule(s))",
+                "detail": (
+                    "The firewall stopped the attack before it reached the target. "
+                    f"Additionally, {fired_count} IDS rule(s) fired on the traffic observed "
+                    "upstream of the firewall — providing forensic evidence of the attempt."
+                ),
+            })
+        else:
+            events.append({
+                "type":   "outcome_blocked",
+                "label":  "Attack stopped",
+                "detail": "The attack was blocked before reaching its target — no traffic delivered.",
+            })
     elif not ids_visible:
         events.append({
             "type":   "outcome_undetected",
@@ -596,7 +635,8 @@ def run_simulation(
         scenario_id, topology, visited_node_ids, attacker_node, target_nodes
     )
 
-    # Truncate attack path at the firewall when blocked — animation stops there
+    # Save full path for IDS position analysis, then truncate for animation
+    attack_path_full = attack_path
     if nftables_blocked and nftables_decision:
         fw_ip = nftables_decision.get("firewall_ip")
         if fw_ip:
@@ -615,8 +655,14 @@ def run_simulation(
     primary_target = target_ips[0]
     packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
 
-    # ── 8. Check IDS visibility ───────────────────────────────────────────────
-    ids_visible, ids_node_labels = _find_ids_visibility(topology, visited_node_ids)
+    # ── 8. Check IDS visibility (upstream vs downstream of firewall) ─────────
+    _fw_ip_for_ids = (
+        nftables_decision.get("firewall_ip")
+        if nftables_blocked and nftables_decision else None
+    )
+    ids_visible, ids_node_labels, ids_downstream_labels = _find_ids_visibility(
+        topology, visited_node_ids, attack_path_full, _fw_ip_for_ids
+    )
 
     # ── 9. Parse rules ────────────────────────────────────────────────────────
     parsed_rules: list[tuple[str, ParsedRule]] = []
@@ -694,6 +740,7 @@ def run_simulation(
         nftables_blocked=nftables_blocked,
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
+        ids_downstream_labels=ids_downstream_labels,
         rule_results=results,
     )
 
@@ -704,6 +751,16 @@ def run_simulation(
             f"Rule: \"{nftables_decision['matched_rule_description']}\". "
             f"Traffic never reached {', '.join(n['data'].get('label', 'target') for n in target_nodes)}."
         )
+        if ids_visible and triggered > 0:
+            summary += (
+                f" Upstream IDS ({', '.join(ids_node_labels)}) still alerted on "
+                f"{triggered} rule(s) — forensic evidence of the blocked attempt."
+            )
+        if ids_downstream_labels:
+            summary += (
+                f" Downstream IDS ({', '.join(ids_downstream_labels)}) had no visibility "
+                "— traffic was dropped before reaching their segment."
+            )
     elif attack_blocked:
         summary = (
             f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
@@ -762,6 +819,7 @@ def run_simulation(
         nftables_blocked=nftables_blocked,
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
+        ids_downstream_labels=ids_downstream_labels,
         timeline=timeline,
         mode=actual_mode,
         suricata_fallback=suricata_fallback,
@@ -926,15 +984,23 @@ def _find_targets(
 def _find_ids_visibility(
     topology: dict,
     visited_node_ids: set[str],
-) -> tuple[bool, list[str]]:
+    attack_path_full: list[list[str]],
+    firewall_ip: Optional[str] = None,
+) -> tuple[bool, list[str], list[str]]:
     """
-    Check whether any IDS node has a monitoring edge to a node on the attack path.
+    Determine which IDS sensors can observe the attack flow, and whether each sits
+    upstream or downstream of the blocking firewall.
 
-    An IDS "sees" a flow if it has any edge (monitoring link) to a node that was
-    traversed during the BFS — attacker, intermediary infrastructure, or target.
+    An IDS "sees" a flow if it has a monitoring edge to any node traversed during
+    the BFS.  When a firewall blocked the traffic, the IDS position in the path
+    determines actual visibility:
+      - upstream (at or before the firewall): saw the traffic before the drop
+      - downstream (after the firewall):      traffic never arrived — blind
+
+    When no firewall blocked, all on-path IDS sensors are treated as upstream.
 
     Returns:
-        (ids_visible, ids_node_labels)
+        (upstream_visible, upstream_labels, downstream_labels)
     """
     nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
 
@@ -944,16 +1010,34 @@ def _find_ids_visibility(
     }
 
     if not ids_node_ids:
-        return False, []
+        return False, [], []
 
-    visible_labels: list[str] = []
+    # Build an ordered IP sequence from the untruncated attack path so we can
+    # compare positions of the firewall and monitored nodes.
+    ip_position: dict[str, int] = {}
+    if attack_path_full:
+        ordered: list[str] = []
+        seen_ips: set[str] = set()
+        first_src = attack_path_full[0][0]
+        if first_src not in seen_ips:
+            ordered.append(first_src)
+            seen_ips.add(first_src)
+        for _src, dst in attack_path_full:
+            if dst not in seen_ips:
+                ordered.append(dst)
+                seen_ips.add(dst)
+        ip_position = {ip: i for i, ip in enumerate(ordered)}
+
+    fw_position: Optional[int] = ip_position.get(firewall_ip) if firewall_ip else None
+
+    upstream_labels: list[str] = []
+    downstream_labels: list[str] = []
     seen_ids: set[str] = set()
 
     for edge in topology.get("edges", []):
         src = edge.get("source", "")
         tgt = edge.get("target", "")
 
-        # Identify which end is the IDS and which is the monitored node
         if src in ids_node_ids:
             ids_id, monitored_id = src, tgt
         elif tgt in ids_node_ids:
@@ -961,13 +1045,24 @@ def _find_ids_visibility(
         else:
             continue
 
-        # IDS has visibility if the monitored node was on the attack path
-        if monitored_id in visited_node_ids and ids_id not in seen_ids:
-            seen_ids.add(ids_id)
-            label = nodes_by_id.get(ids_id, {}).get("data", {}).get("label", "Suricata IDS")
-            visible_labels.append(label)
+        if monitored_id not in visited_node_ids or ids_id in seen_ids:
+            continue
+        seen_ids.add(ids_id)
 
-    return bool(visible_labels), visible_labels
+        label = nodes_by_id.get(ids_id, {}).get("data", {}).get("label", "Suricata IDS")
+
+        if fw_position is not None:
+            # Compare the monitored node's path position to the firewall's position
+            monitored_ip = nodes_by_id.get(monitored_id, {}).get("data", {}).get("ip", "")
+            monitored_pos = ip_position.get(monitored_ip)
+            if monitored_pos is not None and monitored_pos > fw_position:
+                downstream_labels.append(label)
+            else:
+                upstream_labels.append(label)
+        else:
+            upstream_labels.append(label)
+
+    return bool(upstream_labels), upstream_labels, downstream_labels
 
 
 def _resolve_networks(topology: dict) -> tuple[list[str], list[str]]:

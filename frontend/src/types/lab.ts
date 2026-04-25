@@ -191,8 +191,9 @@ export interface SimulationResult {
   nftables_decision?: NftablesDecision
   nftables_blocked?: boolean
   // IDS visibility
-  ids_visible?: boolean           // was any IDS sensor on the attack path?
-  ids_node_labels?: string[]      // labels of IDS nodes that observed the traffic
+  ids_visible?: boolean           // upstream IDS sensor(s) observed the traffic?
+  ids_node_labels?: string[]      // labels of upstream (observing) IDS nodes
+  ids_downstream_labels?: string[]  // IDS nodes blind due to firewall block
   // Event timeline
   timeline?: TimelineEvent[]
   // Simulation mode
