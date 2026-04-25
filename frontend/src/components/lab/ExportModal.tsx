@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import {
   X, Download, Copy, Check, FileText, Settings, Terminal,
-  ChevronRight, ChevronLeft, Network, Shield,
+  ChevronRight, ChevronLeft, Network, Shield, Eye,
 } from 'lucide-react'
 import type { Node, Edge } from '@xyflow/react'
 import type { ActiveRule, DeviceData } from '../../types/lab'
 import { PREDEFINED_RULES } from '../../data/rules'
 import { resolveHomeNet } from '../../utils/exportHelpers'
-import { buildNftablesConfig } from '../../utils/nftablesGenerator'
+import { buildNftablesConfig, buildNftablesPolicySummary } from '../../utils/nftablesGenerator'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -781,6 +781,80 @@ function CodeBlock({ content, color = 'text-green-300' }: { content: string; col
   )
 }
 
+function NftablesSummaryCard({ nodes }: { nodes: Node[] }) {
+  const s = buildNftablesPolicySummary(nodes)
+
+  const actionBadge = (action: string) => {
+    const cls =
+      action === 'accept' ? 'bg-green-900/40 border-green-700/60 text-green-400'
+      : action === 'drop' ? 'bg-red-900/40 border-red-700/60 text-red-400'
+      :                     'bg-orange-900/40 border-orange-700/60 text-orange-400'
+    return (
+      <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold uppercase flex-shrink-0 ${cls}`}>
+        {action}
+      </span>
+    )
+  }
+
+  const chainColor = (c: string) =>
+    c === 'forward' ? 'text-amber-400' : c === 'input' ? 'text-sky-400' : 'text-gray-400'
+
+  return (
+    <div className="bg-gray-800/50 border border-gray-700/60 rounded-xl p-3 flex flex-col gap-2 flex-shrink-0">
+      {/* Firewall info + default policies */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Shield size={11} className="text-orange-400" />
+          <span className="text-[11px] font-semibold text-gray-200">
+            {s.firewallLabel}{s.firewallIp ? ` · ${s.firewallIp}` : ''}
+          </span>
+          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${
+            s.mode === 'policy'
+              ? 'bg-green-900/30 border-green-700/40 text-green-400'
+              : 'bg-yellow-900/30 border-yellow-700/40 text-yellow-400'
+          }`}>
+            {s.mode === 'policy' ? 'policy configured' : 'zone-inferred'}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 text-[10px]">
+          {(['input', 'forward', 'output'] as const).map(chain => {
+            const val = chain === 'input' ? s.defaultInput : chain === 'forward' ? s.defaultForward : s.defaultOutput
+            return (
+              <span key={chain} className="flex items-center gap-1.5">
+                <span className="text-gray-600">{chain}</span>
+                {actionBadge(val)}
+              </span>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Rules list */}
+      {s.rules.length > 0 ? (
+        <div className="flex flex-col gap-0.5 max-h-[72px] overflow-y-auto">
+          {s.rules.map((r, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px] min-w-0">
+              <span className={`font-mono w-14 flex-shrink-0 ${chainColor(r.chain)}`}>{r.chain}</span>
+              <span className="text-gray-400 flex-1 truncate min-w-0">{r.description}</span>
+              {actionBadge(r.action)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[10px] text-gray-600 italic">
+          No explicit rules — chain default policies apply to all traffic.
+        </p>
+      )}
+
+      {/* IDS advisory */}
+      <div className="flex items-start gap-1.5 pt-1.5 border-t border-gray-700/40">
+        <Eye size={10} className="text-indigo-400 mt-0.5 flex-shrink-0" />
+        <p className="text-[10px] text-gray-500">{s.suricataNote}</p>
+      </div>
+    </div>
+  )
+}
+
 // ─── Step 1: Environment questionnaire ───────────────────────────────────────
 
 interface RadioGroupProps<T extends string> {
@@ -1039,6 +1113,7 @@ function OutputStep({
 
           return (
             <>
+              {tab === 'nftables' && <NftablesSummaryCard nodes={nodes} />}
               <div className="flex items-center justify-between flex-shrink-0">
                 <p className="text-[10px] text-gray-500 font-mono">{filename}</p>
                 <div className="flex items-center gap-2">

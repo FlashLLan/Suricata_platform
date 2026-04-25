@@ -269,6 +269,130 @@ function generateFromZones(
   L.push(``)
 }
 
+// ── Policy summary (exported for UI) ──────────────────────────────────────────
+
+export interface NftablesPolicySummary {
+  mode: 'policy' | 'inferred'
+  firewallLabel: string
+  firewallIp: string
+  defaultInput: string
+  defaultForward: string
+  defaultOutput: string
+  activeRuleCount: number
+  rules: { chain: string; description: string; action: string }[]
+  suricataNote: string
+}
+
+export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary {
+  const firewall = nodes.find(n => getData(n).deviceType === 'firewall')
+  const fwData   = firewall ? getData(firewall) : null
+  const policy   = fwData?.firewallPolicy ?? null
+
+  const idsNodes = nodes.filter(n => getData(n).deviceType === 'ids')
+  const suricataNote = idsNodes.length === 0
+    ? 'No IDS sensors in topology — traffic blocked here will not be logged by Suricata.'
+    : `${idsNodes.length} IDS sensor(s): ${idsNodes.map(n => getData(n).label).join(', ')}. ` +
+      `Sensors upstream of this firewall still observe blocked traffic; downstream sensors do not.`
+
+  if (!policy) {
+    return {
+      mode: 'inferred',
+      firewallLabel: fwData?.label ?? '(none)',
+      firewallIp:    fwData?.ip   ?? '',
+      defaultInput:   'drop',
+      defaultForward: 'drop',
+      defaultOutput:  'accept',
+      activeRuleCount: 0,
+      rules: [],
+      suricataNote,
+    }
+  }
+
+  const rules = policy.rules
+    .filter(r => r.enabled)
+    .map(r => {
+      const from  = r.srcZone === 'any' ? 'any' : r.srcZone
+      const to    = r.dstZone === 'any' ? 'any' : r.dstZone
+      const proto = r.protocol === 'any' ? '' : ` ${r.protocol.toUpperCase()}`
+      const port  = r.dstPort ? `:${r.dstPort}` : ''
+      const desc  = r.description || `${from} → ${to}${proto}${port}`
+      return { chain: r.chain, description: desc, action: r.action }
+    })
+
+  return {
+    mode: 'policy',
+    firewallLabel:   fwData.label || 'Firewall',
+    firewallIp:      fwData.ip    || '',
+    defaultInput:    policy.defaultInput,
+    defaultForward:  policy.defaultForward,
+    defaultOutput:   policy.defaultOutput,
+    activeRuleCount: rules.length,
+    rules,
+    suricataNote,
+  }
+}
+
+function _policySummaryLines(s: NftablesPolicySummary): string[] {
+  const L: string[] = []
+  L.push(`# ${LINE}`)
+  L.push(`# Policy summary (human-readable)`)
+  L.push(`# ${LINE}`)
+  L.push(`# Mode     : ${s.mode === 'policy' ? 'Configured via Firewall Policy panel' : 'Zone-inferred — no explicit policy set on firewall node'}`)
+  L.push(`# Firewall : ${s.firewallLabel}${s.firewallIp ? '  (' + s.firewallIp + ')' : ''}`)
+  L.push(`#`)
+  L.push(`# Chain defaults:`)
+  L.push(`#   input   : ${s.defaultInput}`)
+  L.push(`#   forward : ${s.defaultForward}`)
+  L.push(`#   output  : ${s.defaultOutput}`)
+  if (s.rules.length > 0) {
+    L.push(`#`)
+    L.push(`# Explicit rules (${s.activeRuleCount} enabled):`)
+    for (const r of s.rules) {
+      const a = r.action.toUpperCase().padEnd(6)
+      const c = r.chain.padEnd(7)
+      L.push(`#   ${c}  ${a}  ${r.description}`)
+    }
+  } else {
+    L.push(`#`)
+    L.push(`# No explicit rules — chain default policies apply to all traffic.`)
+  }
+  L.push(`# ${LINE}`)
+  L.push(``)
+  return L
+}
+
+function _deploymentNotesLines(fwIp: string): string[] {
+  return [
+    ``,
+    `# ${LINE}`,
+    `# Deployment notes`,
+    `# ${LINE}`,
+    `# 1. Dry-run (validate syntax, do NOT load):`,
+    `#       sudo nft -c -f <this-file>`,
+    `#`,
+    `# 2. Apply:`,
+    `#       sudo nft -f <this-file>`,
+    `#`,
+    `# 3. Verify loaded ruleset:`,
+    `#       sudo nft list ruleset`,
+    `#`,
+    `# 4. Emergency revert (flush all nftables rules):`,
+    `#       sudo nft flush ruleset`,
+    `#`,
+    `# 5. Persist across reboots (systemd-based distros):`,
+    `#       sudo cp <this-file> /etc/nftables.conf`,
+    `#       sudo systemctl enable nftables && sudo systemctl start nftables`,
+    `#`,
+    `# 6. Suricata + nftables placement:`,
+    `#       IDS sensors UPSTREAM of this firewall (${fwIp || 'this host'}) see all traffic`,
+    `#       before it is filtered — visibility is preserved even for blocked attacks.`,
+    `#       Sensors DOWNSTREAM only see forwarded traffic — blocked attacks create a`,
+    `#       detection blind spot. Ideal: run Suricata on the firewall host itself,`,
+    `#       using AF_PACKET before the nftables FORWARD hook fires.`,
+    `# ${LINE}`,
+  ]
+}
+
 // ── Public entry point ─────────────────────────────────────────────────────────
 
 export function buildNftablesConfig(
@@ -350,6 +474,8 @@ export function buildNftablesConfig(
   L.push(`# ${'─'.repeat(72)}`)
   L.push(fwNote)
   L.push(``)
+  const summary = buildNftablesPolicySummary(nodes)
+  for (const line of _policySummaryLines(summary)) L.push(line)
   L.push(`flush ruleset`)
   L.push(``)
   L.push(`table inet filter {`)
@@ -376,6 +502,8 @@ export function buildNftablesConfig(
   L.push(`#         log prefix "nft drop: " drop`)
   L.push(`#     }`)
   L.push(`# }`)
+
+  for (const line of _deploymentNotesLines(summary.firewallIp)) L.push(line)
 
   return L.join('\n')
 }
