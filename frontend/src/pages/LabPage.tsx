@@ -22,7 +22,7 @@ import ExportModal from '../components/lab/ExportModal'
 import PcapImportModal from '../components/lab/PcapImportModal'
 import AnimatedPacketEdge from '../components/lab/AnimatedPacketEdge'
 
-import type { DeviceData, DeviceType, ActiveRule, RuleEntry, SimulationRun } from '../types/lab'
+import type { DeviceData, DeviceType, ActiveRule, RuleEntry, SimulationRun, FirewallRule, FirewallPolicy } from '../types/lab'
 import { PREDEFINED_RULES } from '../data/rules'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -560,6 +560,29 @@ export default function LabPage() {
     }))
   }
 
+  /** Applies a suggested FirewallRule to the first firewall node's policy. */
+  function handleApplyFirewallRule(rule: FirewallRule) {
+    const fwNode = nodesRef.current.find(
+      n => (n.data as unknown as DeviceData).deviceType === 'firewall'
+    )
+    if (!fwNode) return
+
+    const existing = (fwNode.data as unknown as DeviceData).firewallPolicy
+    const defaultPolicy: FirewallPolicy = {
+      defaultInput: 'drop', defaultForward: 'drop', defaultOutput: 'accept', rules: [],
+    }
+    const updated: FirewallPolicy = {
+      ...(existing ?? defaultPolicy),
+      rules: [...(existing?.rules ?? []), rule],
+    }
+
+    setNodes(nds => nds.map(n =>
+      n.id === fwNode.id
+        ? { ...n, data: { ...n.data, firewallPolicy: updated } as unknown as Record<string, unknown> }
+        : n
+    ))
+  }
+
   /** Called when the simulation modal closes — restore edges to normal. */
   function handleSimulationEnd() {
     const ids = new Set(animatingEdgeIds.current)
@@ -846,6 +869,7 @@ export default function LabPage() {
           onSimulationEnd={handleSimulationEnd}
           simHistory={simHistory}
           onRunSaved={handleRunSaved}
+          onApplyFirewallRule={handleApplyFirewallRule}
         />
       )}
     </div>

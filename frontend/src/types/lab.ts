@@ -173,6 +173,22 @@ export interface NftablesDecision {
   explanation: string
 }
 
+export interface EnforcementSuggestion {
+  title: string
+  explanation: string
+  rule: {
+    chain: FWChain
+    srcZone: FWZone
+    dstZone: FWZone
+    protocol: FWProtocol
+    dstPort: string
+    action: FWAction
+    description: string
+  }
+  nft_snippet: string
+  triggered_sids: string[]
+}
+
 export interface SimulationResult {
   scenario: string
   total_packets: number
@@ -199,6 +215,8 @@ export interface SimulationResult {
   // Simulation mode
   mode?: 'python' | 'suricata'
   suricata_fallback?: boolean     // suricata was requested but fell back to python
+  // Detection-to-enforcement suggestions
+  enforcement_suggestions?: EnforcementSuggestion[]
 }
 
 export interface ActiveRule {

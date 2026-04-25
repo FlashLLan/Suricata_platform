@@ -9,7 +9,7 @@ import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
 import { runSimulation, checkStatus } from '../../api/simulation'
 import type { DockerStatus } from '../../api/simulation'
 import type {
-  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry, SimulationRun, NftablesDecision,
+  ActiveRule, SimulationResult, RuleMatchResult, DefenseImpact, TimelineEvent, RuleEntry, SimulationRun, NftablesDecision, EnforcementSuggestion, FirewallRule,
 } from '../../types/lab'
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData } from '../../types/lab'
@@ -26,6 +26,7 @@ interface Props {
   onSimulationEnd: () => void
   simHistory?: SimulationRun[]
   onRunSaved?: (run: SimulationRun) => void
+  onApplyFirewallRule?: (rule: FirewallRule) => void
 }
 
 type ResultTab = 'overview' | 'path' | 'defenses' | 'detection'
@@ -103,7 +104,11 @@ function ResultTabBar({ active, onChange, result }: {
 
 // ─── Overview tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ result, packetRate }: { result: SimulationResult; packetRate: number }) {
+function OverviewTab({ result, packetRate, onApplyFirewallRule }: {
+  result: SimulationResult
+  packetRate: number
+  onApplyFirewallRule?: (rule: FirewallRule) => void
+}) {
   // Determine verdict
   const blocked = result.attack_blocked
   const detected = result.triggered_count > 0
@@ -345,6 +350,124 @@ function OverviewTab({ result, packetRate }: { result: SimulationResult; packetR
                 : 'Educational Sim'}
           </span>
         </div>
+      </div>
+
+      {/* Suggested Mitigations */}
+      {(result.enforcement_suggestions ?? []).length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck size={14} className="text-indigo-400" />
+            <span className="text-[11px] font-semibold text-indigo-300 uppercase tracking-wide">
+              Suggested Mitigations
+            </span>
+          </div>
+          {(result.enforcement_suggestions ?? []).map((s: EnforcementSuggestion, i: number) => (
+            <SuggestionCard key={i} suggestion={s} onApply={onApplyFirewallRule} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Enforcement suggestion card ──────────────────────────────────────────────
+
+function SuggestionCard({
+  suggestion,
+  onApply,
+}: {
+  suggestion: EnforcementSuggestion
+  onApply?: (rule: FirewallRule) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const [applied, setApplied] = useState(false)
+
+  function handleCopy() {
+    navigator.clipboard.writeText(suggestion.nft_snippet).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })
+  }
+
+  function handleApply() {
+    if (!onApply) return
+    const r = suggestion.rule
+    const newRule: FirewallRule = {
+      id: `rule-${Date.now()}`,
+      enabled: true,
+      chain: r.chain,
+      srcZone: r.srcZone,
+      dstZone: r.dstZone,
+      protocol: r.protocol,
+      dstPort: r.dstPort,
+      action: r.action,
+      description: r.description,
+    }
+    onApply(newRule)
+    setApplied(true)
+    setTimeout(() => setApplied(false), 2500)
+  }
+
+  return (
+    <div className="border border-indigo-700/40 bg-indigo-950/20 rounded-xl p-4 space-y-3">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-[12px] font-semibold text-indigo-200">{suggestion.title}</p>
+          <p className="text-[11px] text-gray-400 leading-relaxed">{suggestion.explanation}</p>
+        </div>
+      </div>
+
+      {/* Rule fields */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { label: 'Chain',    value: suggestion.rule.chain },
+          { label: 'From',     value: suggestion.rule.srcZone },
+          { label: 'To',       value: suggestion.rule.dstZone },
+          { label: 'Protocol', value: suggestion.rule.protocol },
+          { label: 'Port(s)',  value: suggestion.rule.dstPort || 'any' },
+          { label: 'Action',   value: suggestion.rule.action },
+        ].map(({ label, value }) => (
+          <div key={label} className="bg-gray-900/60 rounded-lg px-2.5 py-1.5">
+            <p className="text-[9px] text-gray-600 uppercase tracking-wide">{label}</p>
+            <p className={`text-[11px] font-mono font-medium ${
+              value === 'drop' || value === 'reject' ? 'text-red-400' :
+              value === 'accept' ? 'text-green-400' : 'text-gray-300'
+            }`}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* nft snippet */}
+      <div className="bg-gray-950 rounded-lg px-3 py-2 font-mono text-[10px] text-gray-400 overflow-x-auto">
+        {suggestion.nft_snippet}
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2">
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] bg-gray-800 hover:bg-gray-700 text-gray-300 transition"
+        >
+          {copied ? <CheckCircle2 size={12} className="text-green-400" /> : <Minus size={12} />}
+          {copied ? 'Copied' : 'Copy snippet'}
+        </button>
+        {onApply && (
+          <button
+            onClick={handleApply}
+            disabled={applied}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] transition ${
+              applied
+                ? 'bg-green-900/50 text-green-300 cursor-default'
+                : 'bg-indigo-700/60 hover:bg-indigo-600/60 text-indigo-100'
+            }`}
+          >
+            {applied
+              ? <><CheckCircle2 size={12} /> Applied to firewall</>
+              : <><Shield size={12} /> Apply to firewall</>
+            }
+          </button>
+        )}
       </div>
     </div>
   )
@@ -995,6 +1118,7 @@ export default function SimulationModal({
   onSimulationEnd,
   simHistory,
   onRunSaved,
+  onApplyFirewallRule,
 }: Props) {
   const [scenarioId, setScenarioId] = useState(SCENARIOS[0].id)
   const [packetRate, setPacketRate] = useState(5)
@@ -1378,7 +1502,7 @@ export default function SimulationModal({
               <>
                 <ResultTabBar active={activeTab} onChange={setActiveTab} result={result} />
                 <div className="flex-1 overflow-y-auto px-6 py-4">
-                  {activeTab === 'overview'  && <OverviewTab result={result} packetRate={packetRate} />}
+                  {activeTab === 'overview'  && <OverviewTab result={result} packetRate={packetRate} onApplyFirewallRule={onApplyFirewallRule} />}
                   {activeTab === 'path'      && <AttackPathTab result={result} />}
                   {activeTab === 'defenses'  && <DefensesTab result={result} />}
                   {activeTab === 'detection' && <DetectionTab result={result} />}

@@ -50,6 +50,166 @@ _SCENARIO_FLOW_INFO: dict[str, dict] = {
     "normal-browsing":  {"protocol": "tcp",  "dst_port": 80},
 }
 
+# ─── Detection-to-enforcement suggestion library ─────────────────────────────
+# Maps scenario_id → a structured firewall rule suggestion to show when Suricata
+# detects the attack but no nftables policy already blocks it.
+
+_SCENARIO_SUGGESTIONS: dict[str, dict] = {
+    "ssh-brute-force": {
+        "title": "Block external SSH access",
+        "explanation": (
+            "SSH brute force succeeded because port 22 is reachable from external sources. "
+            "Adding a forward rule to drop external TCP/22 removes the attack surface entirely — "
+            "access control is more effective than detection alone for brute-force scenarios."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "external", "dstZone": "any",
+            "protocol": "tcp", "dstPort": "22", "action": "drop",
+            "description": "Block external SSH — prevent brute force",
+        },
+    },
+    "http-brute-force": {
+        "title": "Restrict HTTP login endpoints or add rate limiting",
+        "explanation": (
+            "HTTP brute force succeeded because port 80 is open and connections are unrestricted. "
+            "If public web access is required, consider rate-limiting new connections. "
+            "If only internal access is needed, block external HTTP entirely."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "external", "dstZone": "dmz",
+            "protocol": "tcp", "dstPort": "80,443", "action": "accept",
+            "description": "Explicitly scope web access to DMZ only — tighten if not public-facing",
+        },
+    },
+    "sql-injection": {
+        "title": "Isolate database tier from external access",
+        "explanation": (
+            "SQL injection reached the database because web traffic flows directly to the DB tier. "
+            "The database should only accept connections from the web/app tier, never from external. "
+            "Add a forward rule that drops external traffic destined for the internal network."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "external", "dstZone": "internal",
+            "protocol": "tcp", "dstPort": "3306,5432,1433", "action": "drop",
+            "description": "Block external DB access — enforce DMZ segmentation",
+        },
+    },
+    "nmap-syn-scan": {
+        "title": "Drop unsolicited inbound connections",
+        "explanation": (
+            "Port scanning succeeded because the firewall accepts connection attempts to all ports. "
+            "Dropping new TCP connections to unexposed ports reduces your visible attack surface "
+            "and makes reconnaissance significantly harder."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "external", "dstZone": "any",
+            "protocol": "tcp", "dstPort": "", "action": "drop",
+            "description": "Drop unsolicited external TCP — reduce scan surface",
+        },
+    },
+    "ping-sweep": {
+        "title": "Block ICMP echo requests from external sources",
+        "explanation": (
+            "Ping sweep succeeded because ICMP is allowed inbound from external. "
+            "Dropping external ICMP prevents host discovery — attackers cannot easily enumerate "
+            "which addresses are live before launching targeted attacks."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "external", "dstZone": "any",
+            "protocol": "icmp", "dstPort": "", "action": "drop",
+            "description": "Block external ICMP — prevent host discovery",
+        },
+    },
+    "dns-tunneling": {
+        "title": "Restrict outbound DNS to trusted resolvers only",
+        "explanation": (
+            "DNS tunneling succeeded because outbound UDP/53 is unrestricted. "
+            "Allowing DNS only to known/trusted resolvers prevents arbitrary exfiltration "
+            "over DNS. Internal hosts should use a controlled DNS forwarder, not query external "
+            "resolvers directly."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "internal", "dstZone": "external",
+            "protocol": "udp", "dstPort": "53", "action": "drop",
+            "description": "Block unrestricted outbound DNS — prevent tunneling",
+        },
+    },
+    "http-c2-beacon": {
+        "title": "Block or proxy unrestricted outbound HTTP",
+        "explanation": (
+            "C2 beaconing succeeded over HTTP because outbound web traffic is unrestricted. "
+            "Blocking direct external HTTP/HTTPS forces traffic through a proxy where it can be "
+            "inspected, breaking most C2 channels that rely on direct outbound connectivity."
+        ),
+        "rule": {
+            "chain": "forward", "srcZone": "internal", "dstZone": "external",
+            "protocol": "tcp", "dstPort": "80,443", "action": "drop",
+            "description": "Block unrestricted outbound HTTP — prevent C2 beaconing",
+        },
+    },
+}
+
+
+def _suggestion_to_nft_snippet(rule: dict) -> str:
+    """Convert a suggestion rule dict to a single-line nftables rule string."""
+    parts: list[str] = []
+    zone_set = {"internal": "@INTERNAL", "dmz": "@DMZ", "management": "@MANAGEMENT"}
+    src = rule.get("srcZone", "any")
+    dst = rule.get("dstZone", "any")
+    if src in zone_set:
+        parts.append(f"ip saddr {zone_set[src]}")
+    if dst in zone_set:
+        parts.append(f"ip daddr {zone_set[dst]}")
+    proto = rule.get("protocol", "any")
+    if proto != "any":
+        parts.append(proto)
+        port = rule.get("dstPort", "")
+        if port and proto != "icmp":
+            ports = [p.strip() for p in port.split(",") if p.strip()]
+            if len(ports) == 1:
+                parts.append(f"dport {ports[0]}")
+            elif len(ports) > 1:
+                parts.append(f"dport {{ {', '.join(ports)} }}")
+    parts.append(rule.get("action", "drop"))
+    desc = rule.get("description", "")
+    return "        " + " ".join(parts) + (f"   # {desc}" if desc else "")
+
+
+def _generate_enforcement_suggestions(
+    scenario_id: str,
+    rule_results: list["RuleMatchResult"],
+    nftables_blocked: bool,
+) -> list[dict]:
+    """
+    When Suricata detected an attack that was NOT blocked by nftables policy,
+    return a structured rule suggestion the user can apply to their firewall.
+
+    Returns an empty list when:
+    - the attack was already blocked (no suggestion needed)
+    - no rules fired (nothing detected to act on)
+    - the scenario has no mapping (e.g. normal-browsing)
+    """
+    if nftables_blocked:
+        return []
+
+    fired_sids = [r.rule_sid for r in rule_results if r.fired]
+    if not fired_sids:
+        return []
+
+    suggestion_template = _SCENARIO_SUGGESTIONS.get(scenario_id)
+    if not suggestion_template:
+        return []
+
+    rule = suggestion_template["rule"]
+    return [{
+        "title":        suggestion_template["title"],
+        "explanation":  suggestion_template["explanation"],
+        "rule":         rule,
+        "nft_snippet":  _suggestion_to_nft_snippet(rule),
+        "triggered_sids": fired_sids,
+    }]
+
+
 # ─── Scenario prerequisites ───────────────────────────────────────────────────
 # Maps scenario_id → what the primary target must expose for the attack to make sense.
 #   required_ports:  at least one must appear in the target's configured ports
@@ -122,6 +282,8 @@ class SimulationResult:
     # Simulation mode metadata
     mode: str = "python"              # "python" | "suricata"
     suricata_fallback: bool = False   # suricata was requested but fell back to python
+    # Detection-to-enforcement suggestions
+    enforcement_suggestions: list[dict] = field(default_factory=list)
 
 
 def _parse_ports(ports_str: str) -> set[int]:
@@ -730,7 +892,12 @@ def run_simulation(
     triggered = sum(1 for r in results if r.fired)
     total = len(rule_texts)
 
-    # ── 10. Build event timeline ──────────────────────────────────────────────
+    # ── 10. Detection-to-enforcement suggestions ──────────────────────────────
+    enforcement_suggestions = _generate_enforcement_suggestions(
+        scenario_id, results, nftables_blocked
+    )
+
+    # ── 12. Build event timeline ──────────────────────────────────────────────
     timeline = _build_timeline(
         attack_path=attack_path,
         topology=topology,
@@ -744,7 +911,7 @@ def run_simulation(
         rule_results=results,
     )
 
-    # ── 11. Build summary ─────────────────────────────────────────────────────
+    # ── 13. Build summary ─────────────────────────────────────────────────────
     if nftables_blocked and nftables_decision:
         summary = (
             f"Attack blocked by firewall '{nftables_decision['firewall_label']}' policy. "
@@ -823,6 +990,7 @@ def run_simulation(
         timeline=timeline,
         mode=actual_mode,
         suricata_fallback=suricata_fallback,
+        enforcement_suggestions=enforcement_suggestions,
     )
 
 
