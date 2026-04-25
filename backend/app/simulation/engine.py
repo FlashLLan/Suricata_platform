@@ -142,7 +142,13 @@ def _check_prerequisites(scenario_id: str, target_nodes: list[dict]) -> None:
     if not prereq or not target_nodes:
         return
 
-    target    = target_nodes[0]
+    # Skip infrastructure nodes (firewall/router) — they are intermediaries, not attack targets
+    _INFRA_TYPES = {"firewall", "router"}
+    endpoint_nodes = [n for n in target_nodes if n.get("data", {}).get("deviceType") not in _INFRA_TYPES]
+    if not endpoint_nodes:
+        return  # only infrastructure in path — nothing to validate against
+
+    target    = endpoint_nodes[0]
     data      = target.get("data", {})
     label     = data.get("label", "target device")
     dev_type  = data.get("deviceType", "")
@@ -589,6 +595,17 @@ def run_simulation(
     nftables_decision, nftables_blocked = _evaluate_nftables_policy(
         scenario_id, topology, visited_node_ids, attacker_node, target_nodes
     )
+
+    # Truncate attack path at the firewall when blocked — animation stops there
+    if nftables_blocked and nftables_decision:
+        fw_ip = nftables_decision.get("firewall_ip")
+        if fw_ip:
+            truncated: list[list[str]] = []
+            for hop in attack_path:
+                truncated.append(hop)
+                if hop[1] == fw_ip:
+                    break
+            attack_path = truncated
 
     # ── 6. Evaluate host defenses ─────────────────────────────────────────────
     defense_impacts, defense_blocked = evaluate_defenses(scenario_id, target_nodes)

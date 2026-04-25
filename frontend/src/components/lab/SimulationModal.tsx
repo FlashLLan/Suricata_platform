@@ -22,7 +22,7 @@ interface Props {
   nodes: Node[]
   edges: Edge[]
   onClose: () => void
-  onSimulationStart: (packetRate: number, attackPath: string[][]) => void
+  onSimulationStart: (packetRate: number, attackPath: string[][], nftablesBlockedAt?: string) => void
   onSimulationEnd: () => void
   simHistory?: SimulationRun[]
   onRunSaved?: (run: SimulationRun) => void
@@ -1087,7 +1087,10 @@ export default function SimulationModal({
       onRunSaved?.(run)
 
       if (res.attack_path && res.attack_path.length > 0) {
-        onSimulationStart(packetRate, res.attack_path)
+        const blockedAt = res.nftables_blocked
+          ? (res.nftables_decision as NftablesDecision | undefined)?.firewall_ip
+          : undefined
+        onSimulationStart(packetRate, res.attack_path, blockedAt)
       }
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail

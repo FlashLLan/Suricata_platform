@@ -33,17 +33,19 @@ const ZONE_RING: Record<string, string> = {
 }
 
 function DeviceNode({ data, selected }: NodeProps) {
-  const d = data as unknown as DeviceData
+  const d = data as unknown as DeviceData & { flashBlocked?: boolean }
   const cfg = DEVICE_CONFIG[d.deviceType] ?? DEVICE_CONFIG.workstation
   const { Icon } = cfg
+  const flash = d.flashBlocked === true
 
   return (
     <div
       className={`
         relative flex flex-col items-center gap-1 px-3 py-2.5 rounded-xl
-        border ${cfg.border} ${cfg.bg}
-        ring-2 ${ZONE_RING[d.zone] ?? 'ring-transparent'}
-        ${selected ? 'ring-white/40 shadow-lg shadow-white/10' : ''}
+        border ${flash ? 'border-red-500' : cfg.border} ${cfg.bg}
+        ring-2 ${flash ? 'ring-red-500 animate-pulse' : selected ? 'ring-white/40' : ZONE_RING[d.zone] ?? 'ring-transparent'}
+        ${selected && !flash ? 'shadow-lg shadow-white/10' : ''}
+        ${flash ? 'shadow-lg shadow-red-500/40' : ''}
         min-w-[90px] cursor-pointer select-none
         transition-all duration-150
       `}

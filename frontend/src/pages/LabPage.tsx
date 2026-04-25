@@ -491,12 +491,27 @@ export default function LabPage() {
    * Called when the simulation result arrives.
    * Finds edges along the attack path and switches them to the animated-packet type.
    */
-  function handleSimulationStart(packetRate: number, attackPath: string[][]) {
+  function handleSimulationStart(packetRate: number, attackPath: string[][], nftablesBlockedAt?: string) {
     // Build a reverse map: ip → node id
     const ipToNodeId: Record<string, string> = {}
     for (const node of nodesRef.current) {
       const ip = (node.data as unknown as DeviceData).ip
       if (ip) ipToNodeId[ip] = node.id
+    }
+
+    // Flash the firewall node red when it blocked the attack
+    if (nftablesBlockedAt) {
+      const fwNodeId = ipToNodeId[nftablesBlockedAt]
+      if (fwNodeId) {
+        setNodes(nds => nds.map(n =>
+          n.id === fwNodeId ? { ...n, data: { ...n.data, flashBlocked: true } } : n
+        ))
+        setTimeout(() => {
+          setNodes(nds => nds.map(n =>
+            n.id === fwNodeId ? { ...n, data: { ...n.data, flashBlocked: false } } : n
+          ))
+        }, 2500)
+      }
     }
 
     // Attack path edges — animated red packets
