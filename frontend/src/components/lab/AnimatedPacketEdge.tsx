@@ -21,6 +21,7 @@ const STAGGER_OFFSETS = [0, 0.25, 0.5, 0.75]
 export interface AnimatedPacketEdgeData extends Record<string, unknown> {
   packetRate?: number   // packets per second (1–100); controls speed + dot count
   active?: boolean      // true while simulation is running
+  reversed?: boolean    // true when attack flows from edge.target → edge.source
 }
 
 export type AnimatedPacketEdgeType = Edge<AnimatedPacketEdgeData>
@@ -45,6 +46,7 @@ const AnimatedPacketEdge: FC<EdgeProps<AnimatedPacketEdgeType>> = ({
 
   const rate     = data?.packetRate ?? 5        // default 5 pps
   const active   = data?.active ?? false
+  const reversed = data?.reversed ?? false
 
   // Duration: faster pps → shorter duration per dot
   // Clamp between 0.4s (100 pps) and 4s (1 pps)
@@ -98,6 +100,9 @@ const AnimatedPacketEdge: FC<EdgeProps<AnimatedPacketEdgeType>> = ({
                 dur={`${durationSec}s`}
                 repeatCount="indefinite"
                 begin={begin}
+                keyPoints={reversed ? '1;0' : undefined}
+                keyTimes={reversed ? '0;1' : undefined}
+                calcMode={reversed ? 'linear' : undefined}
               >
                 <mpath href={`#${id}`} />
               </animateMotion>

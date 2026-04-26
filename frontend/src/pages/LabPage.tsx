@@ -515,7 +515,8 @@ export default function LabPage() {
     }
 
     // Attack path edges — animated red packets
-    const attackEdgeIds = new Set<string>()
+    const attackEdgeIds  = new Set<string>()
+    const reversedEdgeIds = new Set<string>()
     // Collect all node IDs on the attack path (to find connected IDS monitoring edges)
     const pathNodeIds = new Set<string>()
 
@@ -526,11 +527,12 @@ export default function LabPage() {
       if (dstId) pathNodeIds.add(dstId)
       if (!srcId || !dstId) continue
       for (const edge of edgesRef.current) {
-        if (
-          (edge.source === srcId && edge.target === dstId) ||
-          (edge.source === dstId && edge.target === srcId)
-        ) {
+        if (edge.source === srcId && edge.target === dstId) {
           attackEdgeIds.add(edge.id)
+        } else if (edge.source === dstId && edge.target === srcId) {
+          // Edge was drawn in the opposite direction — animate packets backwards
+          attackEdgeIds.add(edge.id)
+          reversedEdgeIds.add(edge.id)
         }
       }
     }
@@ -550,7 +552,11 @@ export default function LabPage() {
 
     setEdges(eds => eds.map(e => {
       if (attackEdgeIds.has(e.id)) {
-        return { ...e, type: 'animated-packet', data: { ...(e.data ?? {}), packetRate, active: true } }
+        return {
+          ...e,
+          type: 'animated-packet',
+          data: { ...(e.data ?? {}), packetRate, active: true, reversed: reversedEdgeIds.has(e.id) },
+        }
       }
       if (monitorEdgeIds.has(e.id)) {
         // Keep monitoring style but mark active so the edge knows simulation is running
