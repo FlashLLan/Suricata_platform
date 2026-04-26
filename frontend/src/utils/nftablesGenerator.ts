@@ -128,11 +128,18 @@ function generateFromPolicy(
     L.push(``)
   }
 
+  const ctStateful = policy.ctStateEnabled !== false
+
   emitChain(
     'input', 'input', 'filter', policy.defaultInput,
-    [
+    ctStateful ? [
       `        ct state invalid drop                          # drop invalid packets`,
       `        ct state { established, related } accept       # allow established sessions`,
+      `        iif "lo" accept                                # allow loopback`,
+      `        icmp type echo-request accept                  # allow ICMP ping`,
+      ``,
+    ] : [
+      `        # STATELESS MODE: ct state rules omitted — return traffic hits default policy`,
       `        iif "lo" accept                                # allow loopback`,
       `        icmp type echo-request accept                  # allow ICMP ping`,
       ``,
@@ -143,9 +150,12 @@ function generateFromPolicy(
 
   emitChain(
     'forward', 'forward', 'filter', policy.defaultForward,
-    [
+    ctStateful ? [
       `        ct state invalid drop                          # drop invalid packets`,
       `        ct state { established, related } accept       # allow established sessions`,
+      ``,
+    ] : [
+      `        # STATELESS MODE: reply packets from allowed connections are NOT auto-accepted`,
       ``,
     ],
     policy.rules,

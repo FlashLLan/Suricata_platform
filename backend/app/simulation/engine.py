@@ -501,6 +501,7 @@ def _evaluate_nftables_policy(
 
         rules           = policy.get("rules", [])
         default_forward = policy.get("defaultForward", "drop")
+        ct_state_enabled = policy.get("ctStateEnabled", True)
 
         matched_rule: Optional[dict] = None
         action = default_forward
@@ -547,6 +548,14 @@ def _evaluate_nftables_policy(
         else:
             rl_note = ""
 
+        # Warn when stateless mode + default-drop: return traffic from allowed connections
+        # would also be dropped, silently breaking TCP handshakes and UDP exchanges.
+        ct_stateless_warning = (
+            not ct_state_enabled
+            and default_forward == "drop"
+            and not blocked
+        )
+
         decision = {
             "firewall_label": fw_label,
             "firewall_ip": fw_ip,
@@ -556,6 +565,7 @@ def _evaluate_nftables_policy(
             "rate_limited": rate_limited,
             "rate_limit_pps": rate_limit_pps,
             "rate_limit_burst": rate_limit_burst,
+            "ct_stateless_warning": ct_stateless_warning,
             "explanation": (
                 f"Firewall '{fw_label}' "
                 f"{'BLOCKED' if blocked else ('RATE-LIMITED' if rate_limited else 'allowed')}"
@@ -639,6 +649,22 @@ def _build_timeline(
             "label":      _ev_label,
             "detail":     nftables_decision["explanation"],
             "node_label": nftables_decision["firewall_label"],
+        })
+
+    # ── 2b. Stateless warning (emitted after the firewall pass event) ────────
+    if nftables_decision and nftables_decision.get("ct_stateless_warning"):
+        events.append({
+            "type":       "nftables_ct_stateless",
+            "label":      f"Stateless firewall — return traffic also dropped",
+            "detail":     (
+                f"Firewall '{nftables_decision['firewall_label']}' has stateful tracking disabled "
+                "(ct state established,related accept is absent). "
+                "In a real deployment, reply packets (TCP SYN-ACK, data responses) from this "
+                "allowed flow would hit the default-drop policy and be silently discarded — "
+                "connections time out from the client's perspective. "
+                "Enable stateful tracking to allow established session packets automatically."
+            ),
+            "node_label": nftables_decision.get("firewall_label", "Firewall"),
         })
 
     # ── 3. Defense evaluation (only when nftables didn't block) ──────────────

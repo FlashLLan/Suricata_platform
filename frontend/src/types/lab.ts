@@ -25,6 +25,7 @@ export interface FirewallPolicy {
   defaultForward: FWAction
   defaultOutput: FWAction
   rules: FirewallRule[]
+  ctStateEnabled?: boolean  // false = stateless mode (omits ct state established,related accept)
 }
 
 // ── Device types ───────────────────────────────────────────────────────────────
@@ -143,6 +144,7 @@ export type TimelineEventType =
   | 'nftables_blocked'
   | 'nftables_allowed'
   | 'nftables_rate_limited'
+  | 'nftables_ct_stateless'
   | 'defense_blocked'
   | 'defense_passed'
   | 'no_defense'
@@ -176,6 +178,7 @@ export interface NftablesDecision {
   rate_limited?: boolean
   rate_limit_pps?: number
   rate_limit_burst?: number
+  ct_stateless_warning?: boolean  // true when stateful tracking is disabled and default-forward is drop
 }
 
 export interface EnforcementSuggestion {

@@ -476,6 +476,35 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
         <PolicyToggle label="Forward" value={p.defaultForward} onChange={v => setPolicy({ defaultForward: v })} />
         <PolicyToggle label="Input"   value={p.defaultInput}   onChange={v => setPolicy({ defaultInput: v })} />
         <PolicyToggle label="Output"  value={p.defaultOutput}  onChange={v => setPolicy({ defaultOutput: v })} />
+
+        {/* Stateful connection tracking toggle */}
+        <div className="pt-2 border-t border-gray-800/60 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-300 font-medium">Stateful tracking (ct state)</span>
+            <button
+              type="button"
+              onClick={() => setPolicy({ ctStateEnabled: !(p.ctStateEnabled ?? true) })}
+              className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors flex-shrink-0 ${
+                (p.ctStateEnabled ?? true) ? 'bg-green-600' : 'bg-gray-700'
+              }`}
+            >
+              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                (p.ctStateEnabled ?? true) ? 'translate-x-3.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+          </div>
+          {(p.ctStateEnabled ?? true) ? (
+            <p className="text-[10px] text-gray-600 leading-relaxed">
+              <code className="font-mono">ct state established,related accept</code> is prepended to each chain.
+              Return packets from allowed connections bypass the rule list automatically.
+            </p>
+          ) : (
+            <p className="text-[10px] text-amber-600/90 leading-relaxed">
+              Stateless mode: return packets from allowed connections are re-evaluated against the default policy and will
+              be dropped if defaultForward is drop. TCP connections silently fail — use this to observe the effect.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Presets */}
