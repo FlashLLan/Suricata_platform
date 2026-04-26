@@ -495,6 +495,8 @@ function timelineMeta(type: TimelineEvent['type']): TLMeta {
       return { Icon: Flame,         iconClass: 'text-amber-400',  rowClass: 'border-amber-700/30 bg-amber-950/15', badge: 'THROTTLED', badgeClass: 'bg-amber-900/50 text-amber-300' }
     case 'nftables_ct_stateless':
       return { Icon: Flame,         iconClass: 'text-yellow-500', rowClass: 'border-yellow-700/30 bg-yellow-950/15', badge: 'STATELESS', badgeClass: 'bg-yellow-900/40 text-yellow-400' }
+    case 'port_knock_blocked':
+      return { Icon: Flame,         iconClass: 'text-violet-400', rowClass: 'border-violet-700/40 bg-violet-950/20', badge: 'KNOCK REQ', badgeClass: 'bg-violet-900/60 text-violet-300' }
     case 'defense_blocked':
       return { Icon: ShieldCheck,   iconClass: 'text-green-400',  rowClass: 'border-green-700/30 bg-green-950/20',  badge: 'BLOCKED',  badgeClass: 'bg-green-900/60 text-green-300' }
     case 'defense_passed':

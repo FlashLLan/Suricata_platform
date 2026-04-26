@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info } from 'lucide-react'
+import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info, Database, Key } from 'lucide-react'
 import type {
-  FirewallPolicy, FirewallRule, FWChain, FWProtocol, FWAction, FWZone,
+  FirewallPolicy, FirewallRule, FirewallIPSet, PortKnockConfig,
+  FWChain, FWProtocol, FWAction, FWZone,
 } from '../../types/lab'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -38,6 +39,22 @@ const CHAIN_EXPLANATIONS: Record<FWChain, string> = {
   output:  'Traffic ORIGINATING from the firewall (e.g. the firewall polling an update server).',
   forward: 'Traffic PASSING THROUGH the firewall between zones — this is the most important chain for attack scenarios.',
 }
+
+// Service quick-fill presets for AddRuleForm
+const SERVICE_FILLS: { label: string; protocol: FWProtocol; dstPort: string; description: string }[] = [
+  { label: 'HTTP/HTTPS',     protocol: 'tcp',  dstPort: '80,443',       description: 'Allow web traffic (HTTP/HTTPS)' },
+  { label: 'SSH',            protocol: 'tcp',  dstPort: '22',           description: 'Allow SSH access' },
+  { label: 'DNS',            protocol: 'udp',  dstPort: '53',           description: 'Allow DNS queries' },
+  { label: 'SMTP',           protocol: 'tcp',  dstPort: '25,587',       description: 'Allow outbound mail (SMTP/Submission)' },
+  { label: 'IMAP/POP3',      protocol: 'tcp',  dstPort: '143,993,110,995', description: 'Allow mail retrieval (IMAP/POP3)' },
+  { label: 'MySQL/Postgres', protocol: 'tcp',  dstPort: '3306,5432',   description: 'Allow database access' },
+  { label: 'RDP',            protocol: 'tcp',  dstPort: '3389',         description: 'Allow Remote Desktop (RDP)' },
+  { label: 'NTP',            protocol: 'udp',  dstPort: '123',          description: 'Allow NTP time synchronisation' },
+  { label: 'ICMP Ping',      protocol: 'icmp', dstPort: '',             description: 'Allow ICMP echo (ping)' },
+  { label: 'OpenVPN',        protocol: 'udp',  dstPort: '1194',         description: 'Allow OpenVPN tunnel' },
+  { label: 'WireGuard',      protocol: 'udp',  dstPort: '51820',        description: 'Allow WireGuard VPN' },
+  { label: 'LDAP/LDAPS',     protocol: 'tcp',  dstPort: '389,636',      description: 'Allow LDAP directory access' },
+]
 
 // ── Presets ────────────────────────────────────────────────────────────────────
 
@@ -151,6 +168,10 @@ function chainColor(chain: FWChain) {
   return 'text-gray-400'
 }
 
+function nftName(name: string) {
+  return name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+}
+
 const selectCls = 'w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:ring-1 focus:ring-orange-500 cursor-pointer'
 const inputCls  = 'w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500'
 
@@ -180,6 +201,291 @@ function PolicyToggle({
   )
 }
 
+// ── IP Sets panel ──────────────────────────────────────────────────────────────
+
+function IpSetsPanel({
+  ipSets,
+  onChange,
+}: { ipSets: FirewallIPSet[]; onChange: (sets: FirewallIPSet[]) => void }) {
+  const [open, setOpen] = useState(false)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [newName, setNewName] = useState('')
+  const [newDesc, setNewDesc] = useState('')
+  const [newElements, setNewElements] = useState('')  // comma/newline separated
+  const [addingElement, setAddingElement] = useState<string | null>(null) // set id
+  const [elementInput, setElementInput] = useState('')
+
+  function addSet() {
+    const name = newName.trim()
+    if (!name) return
+    const elements = newElements
+      .split(/[\n,]+/)
+      .map(e => e.trim())
+      .filter(Boolean)
+    const set: FirewallIPSet = {
+      id: `set-${Date.now()}`,
+      name,
+      elements,
+      description: newDesc.trim() || undefined,
+    }
+    onChange([...ipSets, set])
+    setNewName('')
+    setNewDesc('')
+    setNewElements('')
+  }
+
+  function removeSet(id: string) {
+    onChange(ipSets.filter(s => s.id !== id))
+  }
+
+  function addElementToSet(id: string) {
+    const el = elementInput.trim()
+    if (!el) return
+    onChange(ipSets.map(s => s.id === id ? { ...s, elements: [...s.elements, el] } : s))
+    setElementInput('')
+    setAddingElement(null)
+  }
+
+  function removeElement(setId: string, idx: number) {
+    onChange(ipSets.map(s => s.id === setId ? { ...s, elements: s.elements.filter((_, i) => i !== idx) } : s))
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-800 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-400 hover:bg-gray-800/40 transition"
+      >
+        <span className="flex items-center gap-1.5 font-medium text-indigo-400/90">
+          <Database size={11} />
+          IP Sets / Blocklists
+          {ipSets.length > 0 && (
+            <span className="ml-1 text-[9px] bg-indigo-900/40 border border-indigo-700/40 text-indigo-300 px-1.5 py-0.5 rounded">
+              {ipSets.length}
+            </span>
+          )}
+        </span>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-800 p-3 space-y-3">
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Named IP sets are referenced in rules as <code className="font-mono text-indigo-300">@NAME</code>.
+            Use them for blocklists, trusted-host allowlists, or any group of addresses.
+          </p>
+
+          {/* Existing sets */}
+          {ipSets.map(s => (
+            <div key={s.id} className="rounded-lg border border-indigo-900/40 bg-indigo-950/10 overflow-hidden">
+              <div className="flex items-center gap-2 px-2.5 py-1.5">
+                <span className="text-[10px] font-mono font-bold text-indigo-300 flex-1">@{nftName(s.name)}</span>
+                <span className="text-[10px] text-gray-500">{s.elements.length} element{s.elements.length !== 1 ? 's' : ''}</span>
+                <button
+                  type="button"
+                  onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}
+                  className="text-gray-600 hover:text-gray-400"
+                >
+                  {expandedId === s.id ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                </button>
+                <button type="button" onClick={() => removeSet(s.id)} className="text-gray-600 hover:text-red-400 transition">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+
+              {expandedId === s.id && (
+                <div className="px-2.5 pb-2.5 space-y-1.5 border-t border-indigo-900/30">
+                  {s.description && (
+                    <p className="text-[10px] text-gray-500 mt-1.5">{s.description}</p>
+                  )}
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {s.elements.map((el, i) => (
+                      <div key={i} className="flex items-center gap-1 bg-gray-800 rounded px-1.5 py-0.5">
+                        <span className="text-[10px] font-mono text-gray-300">{el}</span>
+                        <button type="button" onClick={() => removeElement(s.id, i)} className="text-gray-600 hover:text-red-400">
+                          <Trash2 size={9} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {addingElement === s.id ? (
+                    <div className="flex gap-1 mt-1">
+                      <input
+                        className={`${inputCls} flex-1`}
+                        value={elementInput}
+                        onChange={e => setElementInput(e.target.value)}
+                        placeholder="1.2.3.4 or 10.0.0.0/8"
+                        onKeyDown={e => e.key === 'Enter' && addElementToSet(s.id)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => addElementToSet(s.id)}
+                        className="px-2 py-1 bg-indigo-700 hover:bg-indigo-600 text-white text-[10px] rounded-lg"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { setAddingElement(s.id); setElementInput('') }}
+                      className="text-[10px] text-indigo-400/80 hover:text-indigo-300 flex items-center gap-1 mt-1"
+                    >
+                      <Plus size={10} /> Add element
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* Add new set form */}
+          <div className="rounded-lg border border-gray-700/60 p-2.5 space-y-2">
+            <p className="text-[10px] font-semibold text-gray-400">New IP set</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">Set name</label>
+                <input
+                  className={inputCls}
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  placeholder="BLOCKLIST"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">Description</label>
+                <input
+                  className={inputCls}
+                  value={newDesc}
+                  onChange={e => setNewDesc(e.target.value)}
+                  placeholder="optional"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Elements (comma or newline separated)</label>
+              <textarea
+                className={`${inputCls} resize-none`}
+                rows={2}
+                value={newElements}
+                onChange={e => setNewElements(e.target.value)}
+                placeholder="1.2.3.4, 5.6.7.8, 10.0.0.0/8"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={addSet}
+              disabled={!newName.trim()}
+              className="w-full py-1.5 bg-indigo-700 hover:bg-indigo-600 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
+            >
+              Create set
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Port knocking panel ────────────────────────────────────────────────────────
+
+function PortKnockingPanel({
+  config,
+  onChange,
+}: { config: PortKnockConfig | undefined; onChange: (c: PortKnockConfig | undefined) => void }) {
+  const [open, setOpen] = useState(false)
+  const enabled = config !== undefined
+
+  const defaults: PortKnockConfig = { knockPort: 7000, targetPort: 22, timeoutSec: 30 }
+  const c = config ?? defaults
+
+  return (
+    <div className="rounded-lg border border-gray-800 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-400 hover:bg-gray-800/40 transition"
+      >
+        <span className="flex items-center gap-1.5 font-medium text-violet-400/90">
+          <Key size={11} />
+          Port Knocking
+          {enabled && (
+            <span className="ml-1 text-[9px] bg-violet-900/40 border border-violet-700/40 text-violet-300 px-1.5 py-0.5 rounded">
+              ON
+            </span>
+          )}
+        </span>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-800 p-3 space-y-2.5">
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Port knocking keeps a port hidden until the client sends a packet to a secret "knock" port first.
+            The firewall uses an nftables set with a timeout to track which source IPs have knocked.
+            External attackers who don't know the knock sequence see the target port as closed.
+          </p>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-300 font-medium">Enable port knocking</span>
+            <button
+              type="button"
+              onClick={() => onChange(enabled ? undefined : defaults)}
+              className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors flex-shrink-0 ${
+                enabled ? 'bg-violet-600' : 'bg-gray-700'
+              }`}
+            >
+              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+          </div>
+
+          {enabled && (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Knock port</label>
+                  <input
+                    type="number" min={1} max={65535}
+                    className={inputCls}
+                    value={c.knockPort}
+                    onChange={e => onChange({ ...c, knockPort: parseInt(e.target.value) || 7000 })}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Target port</label>
+                  <input
+                    type="number" min={1} max={65535}
+                    className={inputCls}
+                    value={c.targetPort}
+                    onChange={e => onChange({ ...c, targetPort: parseInt(e.target.value) || 22 })}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Timeout (s)</label>
+                  <input
+                    type="number" min={1} max={3600}
+                    className={inputCls}
+                    value={c.timeoutSec}
+                    onChange={e => onChange({ ...c, timeoutSec: parseInt(e.target.value) || 30 })}
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-violet-400/70 leading-relaxed">
+                Knock on :{c.knockPort} → :{c.targetPort} unlocks for {c.timeoutSec}s.
+                Generated nft: <code className="font-mono">tcp dport {c.knockPort} add @KNOCK_CLIENTS</code> then
+                <code className="font-mono"> tcp dport {c.targetPort} ip saddr @KNOCK_CLIENTS accept</code>.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Add rule form ──────────────────────────────────────────────────────────────
 
 const BLANK_RULE: Omit<FirewallRule, 'id'> = {
@@ -187,27 +493,44 @@ const BLANK_RULE: Omit<FirewallRule, 'id'> = {
   protocol: 'any', dstPort: '', action: 'drop', description: '',
 }
 
-function AddRuleForm({ onAdd }: { onAdd: (r: FirewallRule) => void }) {
+function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSets: FirewallIPSet[] }) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<Omit<FirewallRule, 'id'>>(BLANK_RULE)
   const [rlEnabled, setRlEnabled] = useState(false)
   const [rlPps,     setRlPps]     = useState(5)
   const [rlBurst,   setRlBurst]   = useState(10)
+  const [srcSet,    setSrcSet]    = useState('')
+  const [dstSet,    setDstSet]    = useState('')
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm(f => ({ ...f, [k]: v }))
+  }
+
+  function applyServiceFill(label: string) {
+    const svc = SERVICE_FILLS.find(s => s.label === label)
+    if (!svc) return
+    setForm(f => ({
+      ...f,
+      protocol: svc.protocol,
+      dstPort: svc.dstPort,
+      description: svc.description,
+    }))
   }
 
   function handleAdd() {
     onAdd({
       id: `rule-${Date.now()}`,
       ...form,
+      srcSet: srcSet || undefined,
+      dstSet: dstSet || undefined,
       rateLimit: (rlEnabled && form.action === 'accept') ? { pps: rlPps, burst: rlBurst } : undefined,
     })
     setForm(BLANK_RULE)
     setRlEnabled(false)
     setRlPps(5)
     setRlBurst(10)
+    setSrcSet('')
+    setDstSet('')
     setOpen(false)
   }
 
@@ -227,6 +550,22 @@ function AddRuleForm({ onAdd }: { onAdd: (r: FirewallRule) => void }) {
 
       {open && (
         <div className="p-3 border-t border-gray-800 space-y-2.5">
+
+          {/* Service quick-fill */}
+          <div>
+            <label className="text-[10px] text-gray-500 block mb-1">Quick service fill</label>
+            <select
+              className={selectCls}
+              value=""
+              onChange={e => applyServiceFill(e.target.value)}
+            >
+              <option value="">— select a service to pre-fill —</option>
+              {SERVICE_FILLS.map(s => (
+                <option key={s.label} value={s.label}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Chain */}
           <div>
             <label className="text-[10px] text-gray-500 block mb-1">Chain</label>
@@ -251,6 +590,34 @@ function AddRuleForm({ onAdd }: { onAdd: (r: FirewallRule) => void }) {
               </select>
             </div>
           </div>
+
+          {/* IP set overrides (only when sets are defined) */}
+          {ipSets.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">
+                  Src IP set <span className="text-indigo-400/70">(overrides zone)</span>
+                </label>
+                <select className={selectCls} value={srcSet} onChange={e => setSrcSet(e.target.value)}>
+                  <option value="">— none —</option>
+                  {ipSets.map(s => (
+                    <option key={s.id} value={s.name}>@{nftName(s.name)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">
+                  Dst IP set <span className="text-indigo-400/70">(overrides zone)</span>
+                </label>
+                <select className={selectCls} value={dstSet} onChange={e => setDstSet(e.target.value)}>
+                  <option value="">— none —</option>
+                  {ipSets.map(s => (
+                    <option key={s.id} value={s.name}>@{nftName(s.name)}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
 
           {/* Protocol + port */}
           <div className="grid grid-cols-2 gap-2">
@@ -371,6 +738,9 @@ function RuleRow({ rule, onToggle, onRemove }: {
   const portLabel = rule.dstPort ? `:${rule.dstPort}` : ''
   const protoLabel = rule.protocol === 'any' ? 'any' : `${rule.protocol}${portLabel}`
 
+  const srcLabel = rule.srcSet ? `@${nftName(rule.srcSet)}` : rule.srcZone
+  const dstLabel = rule.dstSet ? `@${nftName(rule.dstSet)}` : rule.dstZone
+
   return (
     <div className={`border-b border-gray-800/50 last:border-0 transition ${rule.enabled ? '' : 'opacity-40'}`}>
       <div className="flex items-center gap-1.5 px-2 py-1.5">
@@ -384,7 +754,9 @@ function RuleRow({ rule, onToggle, onRemove }: {
           {rule.chain}
         </span>
         <span className="text-[10px] text-gray-400 flex-1 min-w-0 truncate">
-          {rule.srcZone} → {rule.dstZone}
+          <span className={rule.srcSet ? 'text-indigo-400' : ''}>{srcLabel}</span>
+          {' → '}
+          <span className={rule.dstSet ? 'text-indigo-400' : ''}>{dstLabel}</span>
           {protoLabel !== 'any' && <span className="text-gray-600"> ({protoLabel})</span>}
         </span>
         {rule.rateLimit && (
@@ -453,6 +825,7 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
 
   const ruleCount = p.rules.length
   const activeCount = p.rules.filter(r => r.enabled).length
+  const ipSets = p.ipSets ?? []
 
   return (
     <div className="space-y-3">
@@ -563,7 +936,19 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
         )}
       </div>
 
-      <AddRuleForm onAdd={addRule} />
+      <AddRuleForm onAdd={addRule} ipSets={ipSets} />
+
+      {/* IP Sets */}
+      <IpSetsPanel
+        ipSets={ipSets}
+        onChange={sets => setPolicy({ ipSets: sets })}
+      />
+
+      {/* Port Knocking */}
+      <PortKnockingPanel
+        config={p.portKnocking}
+        onChange={c => setPolicy({ portKnocking: c })}
+      />
     </div>
   )
 }

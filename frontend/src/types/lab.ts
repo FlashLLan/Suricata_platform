@@ -7,6 +7,21 @@ export type FWProtocol = 'tcp' | 'udp' | 'icmp' | 'any'
 export type FWAction   = 'accept' | 'drop' | 'reject'
 export type FWZone     = NetworkZone | 'any'
 
+/** A named nftables IP set (blocklist, allowlist, etc.) */
+export interface FirewallIPSet {
+  id: string
+  name: string        // identifier used in rules, e.g. "BLOCKLIST" → ip saddr @BLOCKLIST
+  elements: string[]  // IPs or CIDRs: ["1.2.3.4", "10.0.0.0/8"]
+  description?: string
+}
+
+/** Port-knocking configuration: client must hit knockPort before targetPort is unlocked */
+export interface PortKnockConfig {
+  knockPort: number    // secret knock port (e.g. 7000)
+  targetPort: number   // port unlocked after knock (e.g. 22)
+  timeoutSec: number   // seconds the unlock remains valid (e.g. 30)
+}
+
 export interface FirewallRule {
   id: string
   enabled: boolean
@@ -18,6 +33,8 @@ export interface FirewallRule {
   action: FWAction
   description: string
   rateLimit?: { pps: number; burst: number }  // max packets/sec + burst allowance
+  srcSet?: string   // name of a FirewallIPSet; when set, overrides srcZone IP matching
+  dstSet?: string   // name of a FirewallIPSet; when set, overrides dstZone IP matching
 }
 
 export interface FirewallPolicy {
@@ -25,7 +42,9 @@ export interface FirewallPolicy {
   defaultForward: FWAction
   defaultOutput: FWAction
   rules: FirewallRule[]
-  ctStateEnabled?: boolean  // false = stateless mode (omits ct state established,related accept)
+  ctStateEnabled?: boolean       // false = stateless mode (omits ct state established,related accept)
+  ipSets?: FirewallIPSet[]        // named IP sets referenced by rules
+  portKnocking?: PortKnockConfig  // undefined = disabled
 }
 
 // ── Device types ───────────────────────────────────────────────────────────────
@@ -145,6 +164,7 @@ export type TimelineEventType =
   | 'nftables_allowed'
   | 'nftables_rate_limited'
   | 'nftables_ct_stateless'
+  | 'port_knock_blocked'
   | 'defense_blocked'
   | 'defense_passed'
   | 'no_defense'
@@ -179,6 +199,7 @@ export interface NftablesDecision {
   rate_limit_pps?: number
   rate_limit_burst?: number
   ct_stateless_warning?: boolean  // true when stateful tracking is disabled and default-forward is drop
+  port_knock_blocked?: boolean    // true when port knocking blocked the attempt
 }
 
 export interface EnforcementSuggestion {

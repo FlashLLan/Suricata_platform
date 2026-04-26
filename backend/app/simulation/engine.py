@@ -423,12 +423,33 @@ def _check_zone_policy(
             )
 
 
+def _ip_in_set(ip: str, elements: list[str]) -> bool:
+    """Return True if *ip* falls within any element of an nftables IP set (exact IP or CIDR)."""
+    for element in elements:
+        element = element.strip()
+        if not element:
+            continue
+        if "/" in element:
+            try:
+                if ipaddress.ip_address(ip) in ipaddress.ip_network(element, strict=False):
+                    return True
+            except ValueError:
+                continue
+        else:
+            if ip == element:
+                return True
+    return False
+
+
 def _fw_rule_matches_flow(
     rule: dict,
     src_zone: str,
     dst_zone: str,
     protocol: str,
     dst_port: Optional[int],
+    src_ip: str = "",
+    dst_ip: str = "",
+    ip_sets: Optional[dict] = None,
 ) -> bool:
     """Return True if a single firewall policy rule applies to this flow."""
     if not rule.get("enabled", True):
@@ -436,12 +457,27 @@ def _fw_rule_matches_flow(
     if rule.get("chain") != "forward":
         return False   # only forward chain matters for pass-through attack traffic
 
-    rule_src = rule.get("srcZone", "any")
-    rule_dst = rule.get("dstZone", "any")
-    if rule_src != "any" and rule_src != src_zone:
-        return False
-    if rule_dst != "any" and rule_dst != dst_zone:
-        return False
+    # Source matching: IP set overrides zone
+    src_set_name = rule.get("srcSet")
+    if src_set_name:
+        elements = (ip_sets or {}).get(src_set_name, [])
+        if not _ip_in_set(src_ip, elements):
+            return False
+    else:
+        rule_src = rule.get("srcZone", "any")
+        if rule_src != "any" and rule_src != src_zone:
+            return False
+
+    # Destination matching: IP set overrides zone
+    dst_set_name = rule.get("dstSet")
+    if dst_set_name:
+        elements = (ip_sets or {}).get(dst_set_name, [])
+        if not _ip_in_set(dst_ip, elements):
+            return False
+    else:
+        rule_dst = rule.get("dstZone", "any")
+        if rule_dst != "any" and rule_dst != dst_zone:
+            return False
 
     rule_proto = rule.get("protocol", "any")
     if rule_proto != "any" and rule_proto != protocol:
@@ -484,8 +520,10 @@ def _evaluate_nftables_policy(
     attack_dst_port = flow["dst_port"]
 
     attacker_zone  = attacker_node.get("data", {}).get("zone", "external")
+    attacker_ip    = attacker_node.get("data", {}).get("ip", "")
     primary_target = target_nodes[0] if target_nodes else None
     target_zone    = primary_target.get("data", {}).get("zone", "internal") if primary_target else "internal"
+    target_ip      = primary_target.get("data", {}).get("ip", "") if primary_target else ""
     target_label   = primary_target.get("data", {}).get("label", "target") if primary_target else "target"
 
     port_str = f"/{attack_dst_port}" if attack_dst_port else ""
@@ -503,6 +541,52 @@ def _evaluate_nftables_policy(
         default_forward = policy.get("defaultForward", "drop")
         ct_state_enabled = policy.get("ctStateEnabled", True)
 
+        # Build IP-set lookup: name → list of elements
+        ip_sets: dict[str, list[str]] = {}
+        for s in policy.get("ipSets", []):
+            ip_sets[s.get("name", "")] = s.get("elements", [])
+
+        # ── Port knocking check ───────────────────────────────────────────────
+        # External attackers never know the knock sequence — if port knocking
+        # is enabled for the attack's target port, the port appears closed.
+        port_knocking = policy.get("portKnocking")
+        if (
+            port_knocking
+            and isinstance(port_knocking, dict)
+            and attack_dst_port is not None
+            and port_knocking.get("targetPort") == attack_dst_port
+            and attacker_zone == "external"
+        ):
+            knock_port   = port_knocking.get("knockPort", "?")
+            target_port  = port_knocking.get("targetPort")
+            timeout_sec  = port_knocking.get("timeoutSec", 30)
+            knock_decision = {
+                "firewall_label": fw_label,
+                "firewall_ip": fw_ip,
+                "action": "drop",
+                "matched_rule_description": (
+                    f"Port knocking: port {target_port} locked "
+                    f"(must knock on :{knock_port} within {timeout_sec}s first)"
+                ),
+                "blocked": True,
+                "rate_limited": False,
+                "rate_limit_pps": 0,
+                "rate_limit_burst": 0,
+                "ct_stateless_warning": False,
+                "port_knock_blocked": True,
+                "explanation": (
+                    f"Firewall '{fw_label}' protects port {target_port} with port knocking. "
+                    f"A client must first send a packet to the secret knock port :{knock_port} — "
+                    f"the firewall then adds the client IP to a timed set for {timeout_sec} seconds, "
+                    f"during which :{target_port} is allowed. "
+                    f"External attackers who do not know the knock port see :{target_port} as closed. "
+                    f"Generated nft rule: "
+                    f"tcp dport {knock_port} add @KNOCK_CLIENTS {{ ip saddr timeout {timeout_sec}s }} drop; "
+                    f"tcp dport {target_port} ip saddr @KNOCK_CLIENTS accept"
+                ),
+            }
+            return knock_decision, True
+
         matched_rule: Optional[dict] = None
         action = default_forward
         rate_limited = False
@@ -510,7 +594,10 @@ def _evaluate_nftables_policy(
         rate_limit_burst = 0
 
         for rule in rules:
-            if _fw_rule_matches_flow(rule, attacker_zone, target_zone, attack_protocol, attack_dst_port):
+            if _fw_rule_matches_flow(
+                rule, attacker_zone, target_zone, attack_protocol, attack_dst_port,
+                src_ip=attacker_ip, dst_ip=target_ip, ip_sets=ip_sets,
+            ):
                 matched_rule = rule
                 action = rule.get("action", "drop")
                 rl = rule.get("rateLimit")
@@ -633,9 +720,13 @@ def _build_timeline(
 
     # ── 2. nftables firewall policy evaluation ───────────────────────────────
     if nftables_decision:
+        _is_pk  = nftables_decision.get("port_knock_blocked", False)
         _is_rl  = nftables_decision.get("rate_limited", False)
         _rl_pps = nftables_decision.get("rate_limit_pps", 0)
-        if nftables_blocked:
+        if _is_pk:
+            _ev_type  = "port_knock_blocked"
+            _ev_label = f"Firewall '{nftables_decision['firewall_label']}': PORT KNOCK required"
+        elif nftables_blocked:
             _ev_type  = "nftables_blocked"
             _ev_label = f"Firewall '{nftables_decision['firewall_label']}': BLOCKED"
         elif _is_rl:

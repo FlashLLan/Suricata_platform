@@ -1,6 +1,10 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData, FirewallPolicy, FirewallRule } from '../types/lab'
 
+function nftSetName(name: string): string {
+  return name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+}
+
 function getData(n: Node): DeviceData {
   return n.data as unknown as DeviceData
 }
@@ -23,7 +27,10 @@ function ruleToNft(rule: FirewallRule): string {
 
   const parts: string[] = []
 
-  if (rule.srcZone !== 'any') {
+  // Source: IP set takes precedence over zone
+  if (rule.srcSet) {
+    parts.push(`ip saddr @${nftSetName(rule.srcSet)}`)
+  } else if (rule.srcZone !== 'any') {
     const setMap: Record<string, string> = {
       internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
     }
@@ -32,7 +39,10 @@ function ruleToNft(rule: FirewallRule): string {
     }
   }
 
-  if (rule.dstZone !== 'any') {
+  // Destination: IP set takes precedence over zone
+  if (rule.dstSet) {
+    parts.push(`ip daddr @${nftSetName(rule.dstSet)}`)
+  } else if (rule.dstZone !== 'any') {
     const setMap: Record<string, string> = {
       internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
     }
@@ -68,6 +78,42 @@ function generateFromPolicy(
   policy: FirewallPolicy,
   zones: Record<string, { ips: string[] }>,
 ) {
+  // ── Custom IP sets (blocklists, allowlists) ─────────────────────────────────
+  const customSets = policy.ipSets ?? []
+  if (customSets.length > 0) {
+    L.push(`    # ${LINE}`)
+    L.push(`    # Custom IP sets (blocklists, allowlists, trusted hosts)`)
+    L.push(`    # ${LINE}`)
+    L.push(``)
+    for (const s of customSets) {
+      const sName = nftSetName(s.name)
+      const hasCidr = s.elements.some(e => e.includes('/'))
+      L.push(`    set ${sName} {`)
+      L.push(`        type ipv4_addr`)
+      if (hasCidr || s.elements.length > 1) L.push(`        flags interval`)
+      if (s.description) L.push(`        # ${s.description}`)
+      if (s.elements.length > 0) L.push(`        elements = { ${s.elements.join(', ')} }`)
+      L.push(`    }`)
+      L.push(``)
+    }
+  }
+
+  // ── Port-knocking set (if configured) ───────────────────────────────────────
+  const pk = policy.portKnocking
+  if (pk) {
+    L.push(`    # ${LINE}`)
+    L.push(`    # Port-knocking client tracking set`)
+    L.push(`    # Knock on :${pk.knockPort} to unlock :${pk.targetPort} for ${pk.timeoutSec}s`)
+    L.push(`    # ${LINE}`)
+    L.push(``)
+    L.push(`    set KNOCK_CLIENTS {`)
+    L.push(`        type ipv4_addr`)
+    L.push(`        flags timeout`)
+    L.push(`        timeout ${pk.timeoutSec}s`)
+    L.push(`    }`)
+    L.push(``)
+  }
+
   // Zone address sets (only for zones referenced in rules or with IPs)
   const referencedZones = new Set<string>()
   for (const r of policy.rules) {
@@ -148,15 +194,28 @@ function generateFromPolicy(
     policy.defaultInput === 'drop' ? 'All other inbound: drop' : 'All other inbound: accept',
   )
 
+  const portKnockPreamble: string[] = pk ? [
+    `        # ── Port knocking ──────────────────────────────────────────────────`,
+    `        # Track knock: add source to KNOCK_CLIENTS set, then drop the knock packet`,
+    `        tcp dport ${pk.knockPort} add @KNOCK_CLIENTS { ip saddr timeout ${pk.timeoutSec}s } drop`,
+    `        # Allow target port only for IPs that completed the knock`,
+    `        tcp dport ${pk.targetPort} ip saddr @KNOCK_CLIENTS accept`,
+    `        # ────────────────────────────────────────────────────────────────────`,
+    ``,
+  ] : []
+
   emitChain(
     'forward', 'forward', 'filter', policy.defaultForward,
-    ctStateful ? [
-      `        ct state invalid drop                          # drop invalid packets`,
-      `        ct state { established, related } accept       # allow established sessions`,
-      ``,
-    ] : [
-      `        # STATELESS MODE: reply packets from allowed connections are NOT auto-accepted`,
-      ``,
+    [
+      ...(ctStateful ? [
+        `        ct state invalid drop                          # drop invalid packets`,
+        `        ct state { established, related } accept       # allow established sessions`,
+        ``,
+      ] : [
+        `        # STATELESS MODE: reply packets from allowed connections are NOT auto-accepted`,
+        ``,
+      ]),
+      ...portKnockPreamble,
     ],
     policy.rules,
     policy.defaultForward === 'drop' ? 'Everything else: DROP' : 'Everything else: ACCEPT',
@@ -293,7 +352,10 @@ export interface NftablesPolicySummary {
   defaultForward: string
   defaultOutput: string
   activeRuleCount: number
-  rules: { chain: string; description: string; action: string; rateLimit?: { pps: number; burst: number } }[]
+  rules: { chain: string; description: string; action: string; rateLimit?: { pps: number; burst: number }; srcSet?: string; dstSet?: string; srcZone?: string; dstZone?: string }[]
+  ipSetCount: number
+  ipSetNames: string[]
+  portKnocking?: { knockPort: number; targetPort: number; timeoutSec: number }
   suricataNote: string
 }
 
@@ -318,6 +380,9 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
       defaultOutput:  'accept',
       activeRuleCount: 0,
       rules: [],
+      ipSetCount: 0,
+      ipSetNames: [],
+      portKnocking: undefined,
       suricataNote,
     }
   }
@@ -325,13 +390,15 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
   const rules = policy.rules
     .filter(r => r.enabled)
     .map(r => {
-      const from  = r.srcZone === 'any' ? 'any' : r.srcZone
-      const to    = r.dstZone === 'any' ? 'any' : r.dstZone
+      const from  = r.srcSet ? `@${r.srcSet}` : (r.srcZone === 'any' ? 'any' : r.srcZone)
+      const to    = r.dstSet ? `@${r.dstSet}` : (r.dstZone === 'any' ? 'any' : r.dstZone)
       const proto = r.protocol === 'any' ? '' : ` ${r.protocol.toUpperCase()}`
       const port  = r.dstPort ? `:${r.dstPort}` : ''
       const desc  = r.description || `${from} → ${to}${proto}${port}`
-      return { chain: r.chain, description: desc, action: r.action, rateLimit: r.rateLimit }
+      return { chain: r.chain, description: desc, action: r.action, rateLimit: r.rateLimit, srcSet: r.srcSet, dstSet: r.dstSet, srcZone: r.srcZone, dstZone: r.dstZone }
     })
+
+  const ipSets = policy.ipSets ?? []
 
   return {
     mode: 'policy',
@@ -342,6 +409,9 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
     defaultOutput:   policy.defaultOutput,
     activeRuleCount: rules.length,
     rules,
+    ipSetCount:   ipSets.length,
+    ipSetNames:   ipSets.map(s => nftSetName(s.name)),
+    portKnocking: policy.portKnocking,
     suricataNote,
   }
 }
@@ -362,14 +432,24 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
     L.push(`#`)
     L.push(`# Explicit rules (${s.activeRuleCount} enabled):`)
     for (const r of s.rules) {
-      const a  = r.action.toUpperCase().padEnd(6)
-      const c  = r.chain.padEnd(7)
-      const rl = r.rateLimit ? `  [limit ${r.rateLimit.pps}pps burst ${r.rateLimit.burst}]` : ''
-      L.push(`#   ${c}  ${a}${rl}  ${r.description}`)
+      const a   = r.action.toUpperCase().padEnd(6)
+      const c   = r.chain.padEnd(7)
+      const rl  = r.rateLimit ? `  [limit ${r.rateLimit.pps}pps burst ${r.rateLimit.burst}]` : ''
+      const src = r.srcSet ? `@${r.srcSet.toUpperCase()}` : (r.srcZone ?? 'any')
+      const dst = r.dstSet ? `@${r.dstSet.toUpperCase()}` : (r.dstZone ?? 'any')
+      L.push(`#   ${c}  ${a}${rl}  ${src}→${dst}  ${r.description}`)
     }
   } else {
     L.push(`#`)
     L.push(`# No explicit rules — chain default policies apply to all traffic.`)
+  }
+  if (s.ipSetCount > 0) {
+    L.push(`#`)
+    L.push(`# Custom IP sets: ${s.ipSetCount} defined (${s.ipSetNames.join(', ')})`)
+  }
+  if (s.portKnocking) {
+    L.push(`#`)
+    L.push(`# Port knocking: knock :${s.portKnocking.knockPort} → unlocks :${s.portKnocking.targetPort} for ${s.portKnocking.timeoutSec}s`)
   }
   L.push(`# ${LINE}`)
   L.push(``)
