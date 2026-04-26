@@ -17,6 +17,7 @@ export interface FirewallRule {
   dstPort: string       // e.g. "80" or "80,443" or "" for any
   action: FWAction
   description: string
+  rateLimit?: { pps: number; burst: number }  // max packets/sec + burst allowance
 }
 
 export interface FirewallPolicy {
@@ -141,6 +142,7 @@ export type TimelineEventType =
   | 'hop'
   | 'nftables_blocked'
   | 'nftables_allowed'
+  | 'nftables_rate_limited'
   | 'defense_blocked'
   | 'defense_passed'
   | 'no_defense'
@@ -171,6 +173,9 @@ export interface NftablesDecision {
   matched_rule_description: string
   blocked: boolean
   explanation: string
+  rate_limited?: boolean
+  rate_limit_pps?: number
+  rate_limit_burst?: number
 }
 
 export interface EnforcementSuggestion {
@@ -206,6 +211,7 @@ export interface SimulationResult {
   // nftables firewall policy
   nftables_decision?: NftablesDecision
   nftables_blocked?: boolean
+  nftables_rate_limited?: boolean
   // IDS visibility
   ids_visible?: boolean           // upstream IDS sensor(s) observed the traffic?
   ids_node_labels?: string[]      // labels of upstream (observing) IDS nodes

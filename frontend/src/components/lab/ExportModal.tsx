@@ -836,6 +836,11 @@ function NftablesSummaryCard({ nodes }: { nodes: Node[] }) {
             <div key={i} className="flex items-center gap-2 text-[10px] min-w-0">
               <span className={`font-mono w-14 flex-shrink-0 ${chainColor(r.chain)}`}>{r.chain}</span>
               <span className="text-gray-400 flex-1 truncate min-w-0">{r.description}</span>
+              {r.rateLimit && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded border border-amber-700/50 bg-amber-900/30 text-amber-300 flex-shrink-0 font-semibold">
+                  {r.rateLimit.pps}/s
+                </span>
+              )}
               {actionBadge(r.action)}
             </div>
           ))}

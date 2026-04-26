@@ -53,6 +53,10 @@ function ruleToNft(rule: FirewallRule): string {
     }
   }
 
+  if (rule.rateLimit && rule.action === 'accept') {
+    parts.push(`limit rate ${rule.rateLimit.pps}/second burst ${rule.rateLimit.burst} packets`)
+  }
+
   parts.push(rule.action)
 
   const comment = rule.description ? `   # ${rule.description}` : ''
@@ -279,7 +283,7 @@ export interface NftablesPolicySummary {
   defaultForward: string
   defaultOutput: string
   activeRuleCount: number
-  rules: { chain: string; description: string; action: string }[]
+  rules: { chain: string; description: string; action: string; rateLimit?: { pps: number; burst: number } }[]
   suricataNote: string
 }
 
@@ -316,7 +320,7 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
       const proto = r.protocol === 'any' ? '' : ` ${r.protocol.toUpperCase()}`
       const port  = r.dstPort ? `:${r.dstPort}` : ''
       const desc  = r.description || `${from} → ${to}${proto}${port}`
-      return { chain: r.chain, description: desc, action: r.action }
+      return { chain: r.chain, description: desc, action: r.action, rateLimit: r.rateLimit }
     })
 
   return {
@@ -348,9 +352,10 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
     L.push(`#`)
     L.push(`# Explicit rules (${s.activeRuleCount} enabled):`)
     for (const r of s.rules) {
-      const a = r.action.toUpperCase().padEnd(6)
-      const c = r.chain.padEnd(7)
-      L.push(`#   ${c}  ${a}  ${r.description}`)
+      const a  = r.action.toUpperCase().padEnd(6)
+      const c  = r.chain.padEnd(7)
+      const rl = r.rateLimit ? `  [limit ${r.rateLimit.pps}pps burst ${r.rateLimit.burst}]` : ''
+      L.push(`#   ${c}  ${a}${rl}  ${r.description}`)
     }
   } else {
     L.push(`#`)

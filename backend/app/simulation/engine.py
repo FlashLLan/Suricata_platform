@@ -279,6 +279,7 @@ class SimulationResult:
     # nftables firewall policy evaluation
     nftables_decision: Optional[dict] = None   # see _evaluate_nftables_policy
     nftables_blocked: bool = False
+    nftables_rate_limited: bool = False
     # Simulation mode metadata
     mode: str = "python"              # "python" | "suricata"
     suricata_fallback: bool = False   # suricata was requested but fell back to python
@@ -503,11 +504,21 @@ def _evaluate_nftables_policy(
 
         matched_rule: Optional[dict] = None
         action = default_forward
+        rate_limited = False
+        rate_limit_pps = 0
+        rate_limit_burst = 0
 
         for rule in rules:
             if _fw_rule_matches_flow(rule, attacker_zone, target_zone, attack_protocol, attack_dst_port):
                 matched_rule = rule
                 action = rule.get("action", "drop")
+                rl = rule.get("rateLimit")
+                if rl and isinstance(rl, dict) and action == "accept":
+                    pps = rl.get("pps", 0)
+                    if pps > 0:
+                        rate_limited = True
+                        rate_limit_pps = pps
+                        rate_limit_burst = rl.get("burst", 0)
                 break
 
         rule_desc = ""
@@ -521,19 +532,46 @@ def _evaluate_nftables_policy(
 
         blocked = action in ("drop", "reject")
 
+        if rate_limited:
+            rl_note = (
+                f" Traffic throttled to {rate_limit_pps} packet(s)/second"
+                f" (burst: {rate_limit_burst})."
+            )
+            if scenario_id in ("ssh-brute-force", "http-brute-force"):
+                mins = max(1, 1000 // max(1, rate_limit_pps) // 60)
+                rl_note += (
+                    f" At this rate, a 1 000-password brute-force attempt would require"
+                    f" ≥{mins} minute(s) — vastly increasing detection likelihood"
+                    f" and triggering account lockouts."
+                )
+        else:
+            rl_note = ""
+
         decision = {
             "firewall_label": fw_label,
             "firewall_ip": fw_ip,
             "action": action,
             "matched_rule_description": rule_desc,
             "blocked": blocked,
+            "rate_limited": rate_limited,
+            "rate_limit_pps": rate_limit_pps,
+            "rate_limit_burst": rate_limit_burst,
             "explanation": (
-                f"Firewall '{fw_label}' {'BLOCKED' if blocked else 'allowed'} this traffic. "
+                f"Firewall '{fw_label}' "
+                f"{'BLOCKED' if blocked else ('RATE-LIMITED' if rate_limited else 'allowed')}"
+                f" this traffic. "
                 f"Flow: {flow_desc}. "
-                f"Matching rule: \"{rule_desc}\". "
-                + (f"The attack was stopped — {target_label} never received this traffic."
-                   if blocked
-                   else f"Traffic continued towards {target_label}.")
+                f"Matching rule: \"{rule_desc}\"."
+                + rl_note
+                + (
+                    f" The attack was stopped — {target_label} never received this traffic."
+                    if blocked
+                    else (
+                        f" Traffic throttled — reduced volume delivered to {target_label}."
+                        if rate_limited
+                        else f" Traffic continued towards {target_label}."
+                    )
+                )
             ),
         }
 
@@ -585,13 +623,20 @@ def _build_timeline(
 
     # ── 2. nftables firewall policy evaluation ───────────────────────────────
     if nftables_decision:
+        _is_rl  = nftables_decision.get("rate_limited", False)
+        _rl_pps = nftables_decision.get("rate_limit_pps", 0)
+        if nftables_blocked:
+            _ev_type  = "nftables_blocked"
+            _ev_label = f"Firewall '{nftables_decision['firewall_label']}': BLOCKED"
+        elif _is_rl:
+            _ev_type  = "nftables_rate_limited"
+            _ev_label = f"Firewall '{nftables_decision['firewall_label']}': RATE-LIMITED ({_rl_pps} pps)"
+        else:
+            _ev_type  = "nftables_allowed"
+            _ev_label = f"Firewall '{nftables_decision['firewall_label']}': allowed"
         events.append({
-            "type":       "nftables_blocked" if nftables_blocked else "nftables_allowed",
-            "label":      (
-                f"Firewall '{nftables_decision['firewall_label']}': BLOCKED"
-                if nftables_blocked
-                else f"Firewall '{nftables_decision['firewall_label']}': allowed"
-            ),
+            "type":       _ev_type,
+            "label":      _ev_label,
             "detail":     nftables_decision["explanation"],
             "node_label": nftables_decision["firewall_label"],
         })
@@ -693,6 +738,8 @@ def _build_timeline(
             })
 
     # ── 5. Outcome ────────────────────────────────────────────────────────────
+    _outcome_rl     = nftables_decision.get("rate_limited", False) if nftables_decision else False
+    _outcome_rl_pps = nftables_decision.get("rate_limit_pps", 0)   if nftables_decision else 0
     if attack_blocked:
         upstream_fired = ids_visible and any(r.fired for r in rule_results)
         if nftables_blocked and upstream_fired:
@@ -723,21 +770,26 @@ def _build_timeline(
         })
     elif sum(1 for r in rule_results if r.fired) > 0:
         alert_count = sum(1 for r in rule_results if r.fired)
+        rl_prefix = f"Attack throttled to {_outcome_rl_pps} pps — " if _outcome_rl else ""
         events.append({
             "type":   "outcome_detected",
-            "label":  f"Attack reached target — {alert_count} alert(s) generated",
+            "label":  f"{rl_prefix}{alert_count} alert(s) generated",
             "detail": (
-                f"Traffic was delivered and Suricata generated {alert_count} alert(s). "
-                "Detection succeeded but the attack was not blocked."
+                f"Traffic was delivered{f' at reduced volume ({_outcome_rl_pps} pps)' if _outcome_rl else ''} "
+                f"and Suricata generated {alert_count} alert(s). "
+                + ("Rate limiting significantly reduces brute-force effectiveness. " if _outcome_rl else "")
+                + "Detection succeeded but the attack was not blocked."
             ),
         })
     else:
+        rl_label = f"Attack throttled to {_outcome_rl_pps} pps — no IDS rules fired" if _outcome_rl else "Attack reached target — rules did not fire"
         events.append({
             "type":   "outcome_undetected",
-            "label":  "Attack reached target — rules did not fire",
+            "label":  rl_label,
             "detail": (
                 "Traffic was delivered to the target but no loaded Suricata rules matched. "
-                "Either add more rules or investigate why the existing ones missed."
+                + ("Rate limiting reduces attack volume but does not eliminate it without IDS detection. " if _outcome_rl else "")
+                + "Either add more rules or investigate why the existing ones missed."
             ),
         })
 
@@ -795,6 +847,10 @@ def run_simulation(
     # ── 5. Evaluate nftables firewall policy ─────────────────────────────────
     nftables_decision, nftables_blocked = _evaluate_nftables_policy(
         scenario_id, topology, visited_node_ids, attacker_node, target_nodes
+    )
+
+    nftables_rate_limited = (
+        bool(nftables_decision.get("rate_limited")) if nftables_decision else False
     )
 
     # Save full path for IDS position analysis, then truncate for animation
@@ -928,6 +984,20 @@ def run_simulation(
                 f" Downstream IDS ({', '.join(ids_downstream_labels)}) had no visibility "
                 "— traffic was dropped before reaching their segment."
             )
+    elif nftables_rate_limited and nftables_decision:
+        pps   = nftables_decision.get("rate_limit_pps", 0)
+        burst = nftables_decision.get("rate_limit_burst", 0)
+        tgts  = ', '.join(n['data'].get('label', 'target') for n in target_nodes)
+        summary = (
+            f"Firewall '{nftables_decision['firewall_label']}' rate-limited traffic to {pps} pps"
+            f" (burst {burst}). Attack reached {tgts} at reduced volume — "
+            "brute-force attacks at this rate take far longer and will likely trigger lockouts."
+        )
+        if triggered > 0:
+            summary += (
+                f" IDS ({', '.join(ids_node_labels)}) detected {triggered} rule(s)"
+                " on the throttled traffic."
+            )
     elif attack_blocked:
         summary = (
             f"Attack blocked by defenses on {', '.join(n['data'].get('label', 'target') for n in target_nodes)}. "
@@ -984,6 +1054,7 @@ def run_simulation(
         attack_reached_target=not attack_blocked,
         nftables_decision=nftables_decision,
         nftables_blocked=nftables_blocked,
+        nftables_rate_limited=nftables_rate_limited,
         ids_visible=ids_visible,
         ids_node_labels=ids_node_labels,
         ids_downstream_labels=ids_downstream_labels,

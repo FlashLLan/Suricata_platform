@@ -107,6 +107,21 @@ const PRESETS: Preset[] = [
     },
   },
   {
+    id: 'brute-force-throttle',
+    label: 'Brute-Force Throttle',
+    description: 'Rate-limit SSH (5 pps) and HTTP/S (20 pps) from external. Blocks brute-force while allowing legitimate traffic.',
+    policy: {
+      defaultInput: 'drop',
+      defaultForward: 'drop',
+      defaultOutput: 'accept',
+      rules: [
+        makeRule({ chain: 'forward', srcZone: 'external', dstZone: 'any', protocol: 'tcp', dstPort: '22',      action: 'accept', description: 'External SSH: throttled to 5 pps',        rateLimit: { pps: 5, burst: 10 } }),
+        makeRule({ chain: 'forward', srcZone: 'external', dstZone: 'any', protocol: 'tcp', dstPort: '80,443',  action: 'accept', description: 'External HTTP/S: throttled to 20 pps',    rateLimit: { pps: 20, burst: 40 } }),
+        makeRule({ chain: 'forward', srcZone: 'internal', dstZone: 'any', action: 'accept', description: 'Internal → anywhere: unlimited' }),
+      ],
+    },
+  },
+  {
     id: 'open',
     label: 'No Filtering',
     description: 'Default allow on all chains. Open network — educational "worst case".',
@@ -175,14 +190,24 @@ const BLANK_RULE: Omit<FirewallRule, 'id'> = {
 function AddRuleForm({ onAdd }: { onAdd: (r: FirewallRule) => void }) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<Omit<FirewallRule, 'id'>>(BLANK_RULE)
+  const [rlEnabled, setRlEnabled] = useState(false)
+  const [rlPps,     setRlPps]     = useState(5)
+  const [rlBurst,   setRlBurst]   = useState(10)
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm(f => ({ ...f, [k]: v }))
   }
 
   function handleAdd() {
-    onAdd({ id: `rule-${Date.now()}`, ...form })
+    onAdd({
+      id: `rule-${Date.now()}`,
+      ...form,
+      rateLimit: (rlEnabled && form.action === 'accept') ? { pps: rlPps, burst: rlBurst } : undefined,
+    })
     setForm(BLANK_RULE)
+    setRlEnabled(false)
+    setRlPps(5)
+    setRlBurst(10)
     setOpen(false)
   }
 
@@ -277,6 +302,51 @@ function AddRuleForm({ onAdd }: { onAdd: (r: FirewallRule) => void }) {
             />
           </div>
 
+          {/* Rate limiting — only for accept rules */}
+          {form.action === 'accept' && (
+            <div className="rounded-lg border border-gray-700/60 p-2.5 space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="rl-enable"
+                  checked={rlEnabled}
+                  onChange={e => setRlEnabled(e.target.checked)}
+                  className="accent-amber-500 cursor-pointer"
+                />
+                <label htmlFor="rl-enable" className="text-[11px] text-gray-300 cursor-pointer font-medium">
+                  Enable rate limiting
+                </label>
+              </div>
+              {rlEnabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-gray-500 block mb-1">Max packets/sec</label>
+                      <input
+                        type="number" min={1} max={100000}
+                        className={inputCls}
+                        value={rlPps}
+                        onChange={e => setRlPps(Math.max(1, parseInt(e.target.value) || 1))}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-gray-500 block mb-1">Burst size (packets)</label>
+                      <input
+                        type="number" min={1} max={100000}
+                        className={inputCls}
+                        value={rlBurst}
+                        onChange={e => setRlBurst(Math.max(1, parseInt(e.target.value) || 1))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-amber-700/80 leading-relaxed">
+                    Bursts up to {rlBurst} packets are admitted; excess packets at &gt;{rlPps}/s are dropped. Effective against brute-force and flood attacks.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={handleAdd}
@@ -317,6 +387,11 @@ function RuleRow({ rule, onToggle, onRemove }: {
           {rule.srcZone} → {rule.dstZone}
           {protoLabel !== 'any' && <span className="text-gray-600"> ({protoLabel})</span>}
         </span>
+        {rule.rateLimit && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded border border-amber-700/50 bg-amber-900/30 text-amber-300 flex-shrink-0 font-semibold">
+            {rule.rateLimit.pps}pps
+          </span>
+        )}
         <ActionBadge action={rule.action} />
         {rule.description && (
           <button onClick={() => setShowDetail(!showDetail)} className="text-gray-600 hover:text-gray-400 flex-shrink-0">
