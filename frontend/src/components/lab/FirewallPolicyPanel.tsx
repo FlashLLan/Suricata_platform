@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info, Database, Key } from 'lucide-react'
+import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info, Database, Key, Ban } from 'lucide-react'
 import type {
-  FirewallPolicy, FirewallRule, FirewallIPSet, PortKnockConfig,
+  FirewallPolicy, FirewallRule, FirewallIPSet, PortKnockConfig, DynamicBanConfig,
   FWChain, FWProtocol, FWAction, FWZone,
 } from '../../types/lab'
 
@@ -486,6 +486,134 @@ function PortKnockingPanel({
   )
 }
 
+// ── Dynamic ban panel ──────────────────────────────────────────────────────────
+
+function DynamicBanPanel({
+  config,
+  onChange,
+}: { config: DynamicBanConfig | undefined; onChange: (c: DynamicBanConfig | undefined) => void }) {
+  const [open, setOpen] = useState(false)
+  const enabled = config !== undefined
+
+  const defaults: DynamicBanConfig = {
+    rateThreshold: 5, banDurationSec: 300, targetPort: '22', targetProtocol: 'tcp',
+  }
+  const c = config ?? defaults
+
+  const portLabel  = c.targetPort ? `:${c.targetPort}` : '(all ports)'
+  const protoLabel = c.targetProtocol === 'any' ? '' : `${c.targetProtocol.toUpperCase()} `
+  const nftSnippet = `ip saddr @BAN_LIST drop\n${c.targetProtocol === 'any' ? '' : c.targetProtocol + ' '}${c.targetPort ? `dport { ${c.targetPort} } ` : ''}${c.targetProtocol === 'tcp' ? 'ct state new ' : ''}meter BAN_METER { ip saddr limit rate over ${c.rateThreshold}/minute burst ${c.rateThreshold} packets } add @BAN_LIST { ip saddr timeout ${c.banDurationSec}s } drop`
+
+  return (
+    <div className="rounded-lg border border-gray-800 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-400 hover:bg-gray-800/40 transition"
+      >
+        <span className="flex items-center gap-1.5 font-medium text-rose-400/90">
+          <Ban size={11} />
+          Dynamic Bans
+          {enabled && (
+            <span className="ml-1 text-[9px] bg-rose-900/40 border border-rose-700/40 text-rose-300 px-1.5 py-0.5 rounded">
+              ON
+            </span>
+          )}
+        </span>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-800 p-3 space-y-2.5">
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Automatically temp-ban source IPs that exceed a connection rate threshold.
+            Uses nftables <code className="font-mono text-rose-300/80">meter</code> to track
+            connection rate per source IP and adds offenders to a timed <code className="font-mono text-rose-300/80">BAN_LIST</code> set.
+            Effective against brute-force attacks and scanners.
+          </p>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-300 font-medium">Enable dynamic banning</span>
+            <button
+              type="button"
+              onClick={() => onChange(enabled ? undefined : defaults)}
+              className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors flex-shrink-0 ${
+                enabled ? 'bg-rose-600' : 'bg-gray-700'
+              }`}
+            >
+              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+              }`} />
+            </button>
+          </div>
+
+          {enabled && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Protocol</label>
+                  <select
+                    className={selectCls}
+                    value={c.targetProtocol}
+                    onChange={e => onChange({ ...c, targetProtocol: e.target.value as DynamicBanConfig['targetProtocol'] })}
+                  >
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                    <option value="any">Any</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Port(s) to watch</label>
+                  <input
+                    className={inputCls}
+                    value={c.targetPort}
+                    onChange={e => onChange({ ...c, targetPort: e.target.value })}
+                    placeholder="22  or  22,80  or leave blank"
+                    disabled={c.targetProtocol === 'any'}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Threshold (conn/min)</label>
+                  <input
+                    type="number" min={1} max={10000}
+                    className={inputCls}
+                    value={c.rateThreshold}
+                    onChange={e => onChange({ ...c, rateThreshold: parseInt(e.target.value) || 5 })}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Ban duration (s)</label>
+                  <input
+                    type="number" min={10} max={86400}
+                    className={inputCls}
+                    value={c.banDurationSec}
+                    onChange={e => onChange({ ...c, banDurationSec: parseInt(e.target.value) || 300 })}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-gray-950 px-3 py-2 space-y-1">
+                <p className="text-[9px] text-gray-600 uppercase tracking-wide font-semibold mb-1">nft output (forward chain)</p>
+                {nftSnippet.split('\n').map((line, i) => (
+                  <p key={i} className="text-[10px] font-mono text-rose-300/70 leading-relaxed">{line}</p>
+                ))}
+              </div>
+
+              <p className="text-[10px] text-rose-400/60 leading-relaxed">
+                Any {protoLabel}source exceeding {c.rateThreshold} new connections/min on {portLabel} is banned for {c.banDurationSec}s.
+                Already-banned IPs are dropped before the rule list is evaluated.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Add rule form ──────────────────────────────────────────────────────────────
 
 const BLANK_RULE: Omit<FirewallRule, 'id'> = {
@@ -948,6 +1076,12 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
       <PortKnockingPanel
         config={p.portKnocking}
         onChange={c => setPolicy({ portKnocking: c })}
+      />
+
+      {/* Dynamic Bans */}
+      <DynamicBanPanel
+        config={p.dynamicBan}
+        onChange={c => setPolicy({ dynamicBan: c })}
       />
     </div>
   )

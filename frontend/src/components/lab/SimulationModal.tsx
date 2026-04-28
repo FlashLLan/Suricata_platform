@@ -3,7 +3,7 @@ import {
   X, Play, ChevronDown, ChevronRight, ShieldCheck, ShieldOff,
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
-  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft, Server, FlaskConical, Flame,
+  Minus, XCircle, ZapOff, Info, Clock, ArrowLeft, Server, FlaskConical, Flame, Copy, Ban,
 } from 'lucide-react'
 import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
 import { runSimulation, checkStatus } from '../../api/simulation'
@@ -449,7 +449,7 @@ function SuggestionCard({
           onClick={handleCopy}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] bg-gray-800 hover:bg-gray-700 text-gray-300 transition"
         >
-          {copied ? <CheckCircle2 size={12} className="text-green-400" /> : <Minus size={12} />}
+          {copied ? <CheckCircle2 size={12} className="text-green-400" /> : <Copy size={12} />}
           {copied ? 'Copied' : 'Copy snippet'}
         </button>
         {onApply && (
@@ -497,6 +497,8 @@ function timelineMeta(type: TimelineEvent['type']): TLMeta {
       return { Icon: Flame,         iconClass: 'text-yellow-500', rowClass: 'border-yellow-700/30 bg-yellow-950/15', badge: 'STATELESS', badgeClass: 'bg-yellow-900/40 text-yellow-400' }
     case 'port_knock_blocked':
       return { Icon: Flame,         iconClass: 'text-violet-400', rowClass: 'border-violet-700/40 bg-violet-950/20', badge: 'KNOCK REQ', badgeClass: 'bg-violet-900/60 text-violet-300' }
+    case 'dynamic_ban':
+      return { Icon: Ban,           iconClass: 'text-rose-400',   rowClass: 'border-rose-700/40 bg-rose-950/20',   badge: 'IP BANNED', badgeClass: 'bg-rose-900/60 text-rose-300' }
     case 'defense_blocked':
       return { Icon: ShieldCheck,   iconClass: 'text-green-400',  rowClass: 'border-green-700/30 bg-green-950/20',  badge: 'BLOCKED',  badgeClass: 'bg-green-900/60 text-green-300' }
     case 'defense_passed':

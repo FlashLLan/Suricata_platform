@@ -1,8 +1,15 @@
 import type { Node, Edge } from '@xyflow/react'
-import type { DeviceData, FirewallPolicy, FirewallRule } from '../types/lab'
+import type { DeviceData, DynamicBanConfig, FirewallPolicy, FirewallRule } from '../types/lab'
 
 function nftSetName(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+}
+
+function dynBanMeterLine(db: DynamicBanConfig): string {
+  const proto = db.targetProtocol === 'any' ? '' : `${db.targetProtocol} `
+  const port  = db.targetPort ? `dport { ${db.targetPort.split(',').map(p => p.trim()).join(', ')} } ` : ''
+  const ctNew = db.targetProtocol === 'tcp' ? 'ct state new ' : ''
+  return `${proto}${port}${ctNew}meter BAN_METER { ip saddr limit rate over ${db.rateThreshold}/minute burst ${db.rateThreshold} packets } add @BAN_LIST { ip saddr timeout ${db.banDurationSec}s } drop`
 }
 
 function getData(n: Node): DeviceData {
@@ -114,6 +121,24 @@ function generateFromPolicy(
     L.push(``)
   }
 
+  // ── Dynamic ban set (if configured) ─────────────────────────────────────────
+  const db = policy.dynamicBan
+  if (db) {
+    const protoLabel = db.targetProtocol === 'any' ? 'any protocol' : db.targetProtocol.toUpperCase()
+    const portLabel  = db.targetPort ? `:${db.targetPort}` : '(all ports)'
+    L.push(`    # ${LINE}`)
+    L.push(`    # Dynamic ban — sources exceeding ${db.rateThreshold} connections/min on ${protoLabel}${portLabel}`)
+    L.push(`    #               are banned for ${db.banDurationSec}s`)
+    L.push(`    # ${LINE}`)
+    L.push(``)
+    L.push(`    set BAN_LIST {`)
+    L.push(`        type ipv4_addr`)
+    L.push(`        flags dynamic, timeout`)
+    L.push(`        timeout ${db.banDurationSec}s`)
+    L.push(`    }`)
+    L.push(``)
+  }
+
   // Zone address sets (only for zones referenced in rules or with IPs)
   const referencedZones = new Set<string>()
   for (const r of policy.rules) {
@@ -204,6 +229,14 @@ function generateFromPolicy(
     ``,
   ] : []
 
+  const dynamicBanPreamble: string[] = db ? [
+    `        # ── Dynamic ban ────────────────────────────────────────────────────`,
+    `        ip saddr @BAN_LIST drop                            # drop already-banned sources`,
+    `        ${dynBanMeterLine(db)}`,
+    `        # ────────────────────────────────────────────────────────────────────`,
+    ``,
+  ] : []
+
   emitChain(
     'forward', 'forward', 'filter', policy.defaultForward,
     [
@@ -216,6 +249,7 @@ function generateFromPolicy(
         ``,
       ]),
       ...portKnockPreamble,
+      ...dynamicBanPreamble,
     ],
     policy.rules,
     policy.defaultForward === 'drop' ? 'Everything else: DROP' : 'Everything else: ACCEPT',
@@ -356,6 +390,7 @@ export interface NftablesPolicySummary {
   ipSetCount: number
   ipSetNames: string[]
   portKnocking?: { knockPort: number; targetPort: number; timeoutSec: number }
+  dynamicBan?: { rateThreshold: number; banDurationSec: number; targetPort: string; targetProtocol: string }
   suricataNote: string
 }
 
@@ -383,6 +418,7 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
       ipSetCount: 0,
       ipSetNames: [],
       portKnocking: undefined,
+      dynamicBan: undefined,
       suricataNote,
     }
   }
@@ -412,6 +448,7 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
     ipSetCount:   ipSets.length,
     ipSetNames:   ipSets.map(s => nftSetName(s.name)),
     portKnocking: policy.portKnocking,
+    dynamicBan:   policy.dynamicBan,
     suricataNote,
   }
 }
@@ -450,6 +487,12 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
   if (s.portKnocking) {
     L.push(`#`)
     L.push(`# Port knocking: knock :${s.portKnocking.knockPort} → unlocks :${s.portKnocking.targetPort} for ${s.portKnocking.timeoutSec}s`)
+  }
+  if (s.dynamicBan) {
+    const db = s.dynamicBan
+    const portStr = db.targetPort ? `:${db.targetPort}` : '(all ports)'
+    L.push(`#`)
+    L.push(`# Dynamic ban: ${db.rateThreshold} conn/min on ${db.targetProtocol.toUpperCase()}${portStr} → ban for ${db.banDurationSec}s`)
   }
   L.push(`# ${LINE}`)
   L.push(``)

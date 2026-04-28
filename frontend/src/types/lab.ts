@@ -22,6 +22,14 @@ export interface PortKnockConfig {
   timeoutSec: number   // seconds the unlock remains valid (e.g. 30)
 }
 
+/** Dynamic ban: auto-temp-block a source IP that exceeds rateThreshold new connections/minute */
+export interface DynamicBanConfig {
+  rateThreshold: number      // new connections per minute before ban triggers (e.g. 5)
+  banDurationSec: number     // seconds the source IP stays banned (e.g. 300)
+  targetPort: string         // port(s) to watch, e.g. "22", "" = all ports
+  targetProtocol: 'tcp' | 'udp' | 'any'
+}
+
 export interface FirewallRule {
   id: string
   enabled: boolean
@@ -45,6 +53,7 @@ export interface FirewallPolicy {
   ctStateEnabled?: boolean       // false = stateless mode (omits ct state established,related accept)
   ipSets?: FirewallIPSet[]        // named IP sets referenced by rules
   portKnocking?: PortKnockConfig  // undefined = disabled
+  dynamicBan?: DynamicBanConfig   // undefined = disabled
 }
 
 // ── Device types ───────────────────────────────────────────────────────────────
@@ -165,6 +174,7 @@ export type TimelineEventType =
   | 'nftables_rate_limited'
   | 'nftables_ct_stateless'
   | 'port_knock_blocked'
+  | 'dynamic_ban'
   | 'defense_blocked'
   | 'defense_passed'
   | 'no_defense'
@@ -200,6 +210,8 @@ export interface NftablesDecision {
   rate_limit_burst?: number
   ct_stateless_warning?: boolean  // true when stateful tracking is disabled and default-forward is drop
   port_knock_blocked?: boolean    // true when port knocking blocked the attempt
+  dynamic_ban_triggered?: boolean // true when dynamic ban fired on this source
+  dynamic_ban_after_packets?: number  // how many packets got through before the ban activated
 }
 
 export interface EnforcementSuggestion {

@@ -587,6 +587,60 @@ def _evaluate_nftables_policy(
             }
             return knock_decision, True
 
+        # ── Dynamic ban check ─────────────────────────────────────────────────
+        # Brute-force scenarios generate many new connections. If the policy has
+        # a dynamicBan configured for the attack port/protocol, the source IP
+        # would be banned after rateThreshold connection attempts.
+        dynamic_ban = policy.get("dynamicBan")
+        if dynamic_ban and isinstance(dynamic_ban, dict):
+            db_proto    = dynamic_ban.get("targetProtocol", "tcp")
+            db_port_str = dynamic_ban.get("targetPort", "")
+            db_threshold = dynamic_ban.get("rateThreshold", 5)
+            db_duration  = dynamic_ban.get("banDurationSec", 300)
+
+            # Determine if this attack's protocol/port falls under the ban scope
+            proto_match = db_proto == "any" or db_proto == attack_protocol
+            if db_port_str:
+                watched_ports = {int(p.strip()) for p in db_port_str.split(",") if p.strip().isdigit()}
+                port_match = attack_dst_port is not None and attack_dst_port in watched_ports
+            else:
+                port_match = True  # empty = watch all ports
+
+            # Brute-force scenarios generate many repeated connection attempts
+            _is_bruteforce = scenario_id in ("ssh-brute-force", "http-brute-force")
+
+            if proto_match and port_match and _is_bruteforce:
+                db_decision = {
+                    "firewall_label": fw_label,
+                    "firewall_ip": fw_ip,
+                    "action": "drop",
+                    "matched_rule_description": (
+                        f"Dynamic ban: source exceeded {db_threshold} connections/min — "
+                        f"banned for {db_duration}s"
+                    ),
+                    "blocked": True,
+                    "rate_limited": False,
+                    "rate_limit_pps": 0,
+                    "rate_limit_burst": 0,
+                    "ct_stateless_warning": False,
+                    "port_knock_blocked": False,
+                    "dynamic_ban_triggered": True,
+                    "dynamic_ban_after_packets": db_threshold,
+                    "explanation": (
+                        f"Firewall '{fw_label}' dynamic ban triggered. "
+                        f"The attacker's repeated connection attempts on "
+                        f"{db_proto.upper()} port {attack_dst_port} exceeded the threshold of "
+                        f"{db_threshold} new connections/minute. "
+                        f"After packet #{db_threshold}, the source IP ({attacker_ip}) was added to "
+                        f"the BAN_LIST set — all subsequent traffic from that source is dropped "
+                        f"for the next {db_duration} seconds. "
+                        f"Generated nft rule: "
+                        f"meter BAN_METER {{ ip saddr limit rate over {db_threshold}/minute "
+                        f"burst {db_threshold} packets }} add @BAN_LIST {{ ip saddr timeout {db_duration}s }} drop"
+                    ),
+                }
+                return db_decision, True
+
         matched_rule: Optional[dict] = None
         action = default_forward
         rate_limited = False
@@ -721,11 +775,16 @@ def _build_timeline(
     # ── 2. nftables firewall policy evaluation ───────────────────────────────
     if nftables_decision:
         _is_pk  = nftables_decision.get("port_knock_blocked", False)
+        _is_db  = nftables_decision.get("dynamic_ban_triggered", False)
         _is_rl  = nftables_decision.get("rate_limited", False)
         _rl_pps = nftables_decision.get("rate_limit_pps", 0)
+        _db_n   = nftables_decision.get("dynamic_ban_after_packets", 0)
         if _is_pk:
             _ev_type  = "port_knock_blocked"
             _ev_label = f"Firewall '{nftables_decision['firewall_label']}': PORT KNOCK required"
+        elif _is_db:
+            _ev_type  = "dynamic_ban"
+            _ev_label = f"Firewall '{nftables_decision['firewall_label']}': DYNAMIC BAN (after {_db_n} connections)"
         elif nftables_blocked:
             _ev_type  = "nftables_blocked"
             _ev_label = f"Firewall '{nftables_decision['firewall_label']}': BLOCKED"
