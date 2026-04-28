@@ -30,6 +30,23 @@ export interface DynamicBanConfig {
   targetProtocol: 'tcp' | 'udp' | 'any'
 }
 
+/** NAT rule: DNAT port-forwards inbound traffic to an internal host; masquerade hides src IPs */
+export type NatType = 'dnat' | 'masquerade'
+
+export interface NatRule {
+  id: string
+  enabled: boolean
+  type: NatType
+  description: string
+  // DNAT fields (type === 'dnat')
+  protocol?: 'tcp' | 'udp'
+  extPort?: string      // external port(s) to redirect, e.g. "80" or "80,8080"
+  toAddr?: string       // internal destination IP, e.g. "10.0.0.5"
+  toPort?: string       // internal port (blank = same as extPort)
+  // Masquerade field (type === 'masquerade')
+  srcZone?: FWZone      // zone whose source IPs get hidden behind the firewall's external IP
+}
+
 export interface FirewallRule {
   id: string
   enabled: boolean
@@ -54,6 +71,7 @@ export interface FirewallPolicy {
   ipSets?: FirewallIPSet[]        // named IP sets referenced by rules
   portKnocking?: PortKnockConfig  // undefined = disabled
   dynamicBan?: DynamicBanConfig   // undefined = disabled
+  natRules?: NatRule[]            // undefined = no NAT configured
 }
 
 // ── Device types ───────────────────────────────────────────────────────────────
@@ -175,6 +193,8 @@ export type TimelineEventType =
   | 'nftables_ct_stateless'
   | 'port_knock_blocked'
   | 'dynamic_ban'
+  | 'nat_dnat'
+  | 'nat_masquerade'
   | 'defense_blocked'
   | 'defense_passed'
   | 'no_defense'
@@ -212,6 +232,14 @@ export interface NftablesDecision {
   port_knock_blocked?: boolean    // true when port knocking blocked the attempt
   dynamic_ban_triggered?: boolean // true when dynamic ban fired on this source
   dynamic_ban_after_packets?: number  // how many packets got through before the ban activated
+}
+
+export interface NatDecision {
+  type: NatType
+  description: string
+  redirected_to?: string    // DNAT: "10.0.0.5:8080"
+  ext_port?: string         // DNAT: external port matched
+  masked_zone?: string      // masquerade: zone being hidden
 }
 
 export interface EnforcementSuggestion {
@@ -259,6 +287,8 @@ export interface SimulationResult {
   suricata_fallback?: boolean     // suricata was requested but fell back to python
   // Detection-to-enforcement suggestions
   enforcement_suggestions?: EnforcementSuggestion[]
+  // NAT evaluation
+  nat_decisions?: NatDecision[]
 }
 
 export interface ActiveRule {

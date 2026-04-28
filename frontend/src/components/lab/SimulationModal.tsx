@@ -499,6 +499,10 @@ function timelineMeta(type: TimelineEvent['type']): TLMeta {
       return { Icon: Flame,         iconClass: 'text-violet-400', rowClass: 'border-violet-700/40 bg-violet-950/20', badge: 'KNOCK REQ', badgeClass: 'bg-violet-900/60 text-violet-300' }
     case 'dynamic_ban':
       return { Icon: Ban,           iconClass: 'text-rose-400',   rowClass: 'border-rose-700/40 bg-rose-950/20',   badge: 'IP BANNED', badgeClass: 'bg-rose-900/60 text-rose-300' }
+    case 'nat_dnat':
+      return { Icon: ArrowRight,    iconClass: 'text-cyan-400',   rowClass: 'border-cyan-700/40 bg-cyan-950/20',   badge: 'DNAT',      badgeClass: 'bg-cyan-900/60 text-cyan-300' }
+    case 'nat_masquerade':
+      return { Icon: EyeOff,        iconClass: 'text-teal-400',   rowClass: 'border-teal-700/40 bg-teal-950/20',   badge: 'MASQ',      badgeClass: 'bg-teal-900/60 text-teal-300' }
     case 'defense_blocked':
       return { Icon: ShieldCheck,   iconClass: 'text-green-400',  rowClass: 'border-green-700/30 bg-green-950/20',  badge: 'BLOCKED',  badgeClass: 'bg-green-900/60 text-green-300' }
     case 'defense_passed':

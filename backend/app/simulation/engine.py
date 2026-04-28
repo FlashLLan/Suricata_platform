@@ -285,6 +285,8 @@ class SimulationResult:
     suricata_fallback: bool = False   # suricata was requested but fell back to python
     # Detection-to-enforcement suggestions
     enforcement_suggestions: list[dict] = field(default_factory=list)
+    # NAT evaluation
+    nat_decisions: list[dict] = field(default_factory=list)
 
 
 def _parse_ports(ports_str: str) -> set[int]:
@@ -734,6 +736,105 @@ def _evaluate_nftables_policy(
     return last_allow_decision, False
 
 
+def _evaluate_nat_rules(
+    scenario_id: str,
+    topology: dict,
+    visited_node_ids: set[str],
+    attacker_node: dict,
+) -> list[dict]:
+    """
+    Detect NAT rules (DNAT / masquerade) on firewall nodes along the attack path
+    and return a list of educational NAT decision dicts.
+
+    NAT does not block traffic — it describes how addresses are translated.
+    DNAT fires when the attack port matches a forwarding rule.
+    Masquerade fires for outbound flows (internal → external scenarios).
+    """
+    fw_nodes = [
+        n for n in topology.get("nodes", [])
+        if n.get("data", {}).get("deviceType") == "firewall"
+        and n["id"] in visited_node_ids
+        and n.get("data", {}).get("firewallPolicy")
+    ]
+    if not fw_nodes:
+        return []
+
+    flow = _SCENARIO_FLOW_INFO.get(scenario_id, {"protocol": "tcp", "dst_port": None})
+    attack_protocol = flow["protocol"]
+    attack_dst_port = flow["dst_port"]
+    attacker_zone = attacker_node.get("data", {}).get("zone", "external")
+
+    # Scenarios where traffic flows internal → external (masquerade applies)
+    _OUTBOUND_SCENARIOS = {"dns-tunneling", "http-c2-beacon", "normal-browsing"}
+
+    decisions: list[dict] = []
+
+    for fw_node in fw_nodes:
+        policy = fw_node.get("data", {}).get("firewallPolicy", {})
+        nat_rules = policy.get("natRules", [])
+        if not nat_rules:
+            continue
+        fw_label = fw_node.get("data", {}).get("label", "Firewall")
+
+        for rule in nat_rules:
+            if not rule.get("enabled", True):
+                continue
+            nat_type = rule.get("type", "")
+
+            if nat_type == "dnat":
+                # Check protocol match
+                rule_proto = rule.get("protocol", "tcp")
+                if rule_proto != attack_protocol:
+                    continue
+                # Check port match
+                ext_port_str = rule.get("extPort", "")
+                if ext_port_str and attack_dst_port is not None:
+                    rule_ports = {
+                        int(p.strip()) for p in ext_port_str.split(",")
+                        if p.strip().isdigit()
+                    }
+                    if attack_dst_port not in rule_ports:
+                        continue
+                to_addr = rule.get("toAddr", "")
+                to_port = rule.get("toPort", "") or ext_port_str
+                redirected_to = f"{to_addr}:{to_port}" if to_addr and to_port else to_addr
+                decisions.append({
+                    "type": "dnat",
+                    "description": (
+                        f"Firewall '{fw_label}' DNAT: inbound {rule_proto.upper()}:{ext_port_str} "
+                        f"is forwarded to {redirected_to}. "
+                        f"External traffic targeting the firewall's public IP on port {ext_port_str} "
+                        f"is transparently redirected to the internal host without the client being aware. "
+                        + (f"Rule note: {rule.get('description')}" if rule.get("description") else "")
+                    ),
+                    "redirected_to": redirected_to,
+                    "ext_port": ext_port_str,
+                })
+
+            elif nat_type == "masquerade":
+                # Only fires for outbound (internal-initiated) scenarios
+                if scenario_id not in _OUTBOUND_SCENARIOS:
+                    # Also fires when attacker zone matches srcZone
+                    src_zone = rule.get("srcZone", "internal")
+                    if src_zone != "any" and src_zone != attacker_zone:
+                        continue
+                src_zone = rule.get("srcZone", "internal")
+                decisions.append({
+                    "type": "masquerade",
+                    "description": (
+                        f"Firewall '{fw_label}' masquerade: outbound traffic from the "
+                        f"'{src_zone}' zone has its source IP replaced with the firewall's "
+                        f"external IP. The remote server sees the firewall's IP as the source, "
+                        f"not the internal host's private address. "
+                        f"Return traffic is automatically un-NAT'd by the firewall's conntrack. "
+                        + (f"Rule note: {rule.get('description')}" if rule.get("description") else "")
+                    ),
+                    "masked_zone": src_zone,
+                })
+
+    return decisions
+
+
 def _build_timeline(
     attack_path: list[list[str]],
     topology: dict,
@@ -745,6 +846,7 @@ def _build_timeline(
     ids_node_labels: list[str],
     ids_downstream_labels: list[str],
     rule_results: list[RuleMatchResult],
+    nat_decisions: list[dict] | None = None,
 ) -> list[dict]:
     """Build a step-by-step narrative timeline of the simulation."""
 
@@ -771,6 +873,21 @@ def _build_timeline(
             "from_label": from_label,
             "to_label":   to_label,
         })
+
+    # ── 1b. NAT events (DNAT / masquerade) ───────────────────────────────────
+    for nat in (nat_decisions or []):
+        if nat["type"] == "dnat":
+            events.append({
+                "type":   "nat_dnat",
+                "label":  f"Port Forward: external:{nat.get('ext_port', '?')} → {nat.get('redirected_to', '?')}",
+                "detail": nat["description"],
+            })
+        elif nat["type"] == "masquerade":
+            events.append({
+                "type":   "nat_masquerade",
+                "label":  f"Masquerade: {nat.get('masked_zone', 'internal')} → external (src IP hidden)",
+                "detail": nat["description"],
+            })
 
     # ── 2. nftables firewall policy evaluation ───────────────────────────────
     if nftables_decision:
@@ -1129,6 +1246,11 @@ def run_simulation(
         scenario_id, results, nftables_blocked
     )
 
+    # ── 11. Evaluate NAT rules ────────────────────────────────────────────────
+    nat_decisions = _evaluate_nat_rules(
+        scenario_id, topology, visited_node_ids, attacker_node
+    )
+
     # ── 12. Build event timeline ──────────────────────────────────────────────
     timeline = _build_timeline(
         attack_path=attack_path,
@@ -1141,6 +1263,7 @@ def run_simulation(
         ids_node_labels=ids_node_labels,
         ids_downstream_labels=ids_downstream_labels,
         rule_results=results,
+        nat_decisions=nat_decisions,
     )
 
     # ── 13. Build summary ─────────────────────────────────────────────────────
@@ -1238,6 +1361,7 @@ def run_simulation(
         mode=actual_mode,
         suricata_fallback=suricata_fallback,
         enforcement_suggestions=enforcement_suggestions,
+        nat_decisions=nat_decisions,
     )
 
 

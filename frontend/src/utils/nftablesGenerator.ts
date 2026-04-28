@@ -1,5 +1,5 @@
 import type { Node, Edge } from '@xyflow/react'
-import type { DeviceData, DynamicBanConfig, FirewallPolicy, FirewallRule } from '../types/lab'
+import type { DeviceData, DynamicBanConfig, FirewallPolicy, FirewallRule, NatRule } from '../types/lab'
 
 function nftSetName(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')
@@ -376,6 +376,58 @@ function generateFromZones(
   L.push(``)
 }
 
+// ── NAT table generation ───────────────────────────────────────────────────────
+
+function generateNatTable(L: string[], natRules: NatRule[]) {
+  const enabled = natRules.filter(r => r.enabled)
+  if (enabled.length === 0) return
+
+  const dnatRules = enabled.filter(r => r.type === 'dnat')
+  const masqRules = enabled.filter(r => r.type === 'masquerade')
+
+  const setMap: Record<string, string> = {
+    internal: 'INTERNAL', dmz: 'DMZ', management: 'MANAGEMENT',
+  }
+
+  L.push(`table ip nat {`)
+  L.push(``)
+
+  if (dnatRules.length > 0) {
+    L.push(`    chain prerouting {`)
+    L.push(`        type nat hook prerouting priority dstnat; policy accept;`)
+    L.push(``)
+    for (const r of dnatRules) {
+      const proto = r.protocol ?? 'tcp'
+      const rawPorts = (r.extPort ?? '').split(',').map(p => p.trim()).filter(Boolean)
+      const portExpr = rawPorts.length === 1 ? rawPorts[0] : rawPorts.length > 1 ? `{ ${rawPorts.join(', ')} }` : 'any'
+      const toTarget = r.toAddr ? (r.toPort ? `${r.toAddr}:${r.toPort}` : r.toAddr) : '?'
+      const comment = r.description ? `   # ${r.description}` : ''
+      L.push(`        ${proto} dport ${portExpr} dnat to ${toTarget}${comment}`)
+    }
+    L.push(`    }`)
+    L.push(``)
+  }
+
+  if (masqRules.length > 0) {
+    L.push(`    chain postrouting {`)
+    L.push(`        type nat hook postrouting priority srcnat; policy accept;`)
+    L.push(``)
+    for (const r of masqRules) {
+      const zone = r.srcZone
+      const saddr = zone && zone !== 'any' && zone !== 'external' && setMap[zone]
+        ? `ip saddr @${setMap[zone]} `
+        : ''
+      const comment = r.description ? `   # ${r.description}` : ''
+      L.push(`        ${saddr}masquerade${comment}`)
+    }
+    L.push(`    }`)
+    L.push(``)
+  }
+
+  L.push(`}`)
+  L.push(``)
+}
+
 // ── Policy summary (exported for UI) ──────────────────────────────────────────
 
 export interface NftablesPolicySummary {
@@ -391,6 +443,8 @@ export interface NftablesPolicySummary {
   ipSetNames: string[]
   portKnocking?: { knockPort: number; targetPort: number; timeoutSec: number }
   dynamicBan?: { rateThreshold: number; banDurationSec: number; targetPort: string; targetProtocol: string }
+  natRuleCount: number
+  natRules: { type: string; description: string }[]
   suricataNote: string
 }
 
@@ -419,6 +473,8 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
       ipSetNames: [],
       portKnocking: undefined,
       dynamicBan: undefined,
+      natRuleCount: 0,
+      natRules: [],
       suricataNote,
     }
   }
@@ -435,6 +491,7 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
     })
 
   const ipSets = policy.ipSets ?? []
+  const natRules = (policy.natRules ?? []).filter(r => r.enabled)
 
   return {
     mode: 'policy',
@@ -449,6 +506,8 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
     ipSetNames:   ipSets.map(s => nftSetName(s.name)),
     portKnocking: policy.portKnocking,
     dynamicBan:   policy.dynamicBan,
+    natRuleCount: natRules.length,
+    natRules:     natRules.map(r => ({ type: r.type, description: r.description })),
     suricataNote,
   }
 }
@@ -493,6 +552,13 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
     const portStr = db.targetPort ? `:${db.targetPort}` : '(all ports)'
     L.push(`#`)
     L.push(`# Dynamic ban: ${db.rateThreshold} conn/min on ${db.targetProtocol.toUpperCase()}${portStr} → ban for ${db.banDurationSec}s`)
+  }
+  if (s.natRuleCount > 0) {
+    L.push(`#`)
+    L.push(`# NAT rules (${s.natRuleCount} active):`)
+    for (const r of s.natRules) {
+      L.push(`#   ${r.type.padEnd(12)}  ${r.description}`)
+    }
   }
   L.push(`# ${LINE}`)
   L.push(``)
@@ -627,6 +693,12 @@ export function buildNftablesConfig(
 
   L.push(`}`)
   L.push(``)
+
+  // NAT table (DNAT + masquerade) — emitted as a separate table ip nat block
+  const natRules = policy?.natRules ?? []
+  if (natRules.some(r => r.enabled)) {
+    generateNatTable(L, natRules)
+  }
 
   // Optional logging block
   L.push(`# ${'─'.repeat(72)}`)

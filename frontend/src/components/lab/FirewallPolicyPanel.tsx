@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info, Database, Key, Ban } from 'lucide-react'
+import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info, Database, Key, Ban, ArrowRight } from 'lucide-react'
 import type {
-  FirewallPolicy, FirewallRule, FirewallIPSet, PortKnockConfig, DynamicBanConfig,
+  FirewallPolicy, FirewallRule, FirewallIPSet, PortKnockConfig, DynamicBanConfig, NatRule, NatType,
   FWChain, FWProtocol, FWAction, FWZone,
 } from '../../types/lab'
 
@@ -614,6 +614,262 @@ function DynamicBanPanel({
   )
 }
 
+// ── NAT panel ─────────────────────────────────────────────────────────────────
+
+function NatPanel({
+  natRules,
+  onChange,
+}: { natRules: NatRule[]; onChange: (rules: NatRule[]) => void }) {
+  const [open, setOpen] = useState(false)
+  const [addingType, setAddingType] = useState<NatType>('dnat')
+  const [dnatProto, setDnatProto] = useState<'tcp' | 'udp'>('tcp')
+  const [dnatExtPort, setDnatExtPort] = useState('80')
+  const [dnatToAddr, setDnatToAddr] = useState('')
+  const [dnatToPort, setDnatToPort] = useState('')
+  const [dnatDesc, setDnatDesc] = useState('')
+  const [masqZone, setMasqZone] = useState<FWZone>('internal')
+  const [masqDesc, setMasqDesc] = useState('')
+
+  function addDnat() {
+    if (!dnatExtPort.trim() || !dnatToAddr.trim()) return
+    const r: NatRule = {
+      id: `nat-${Date.now()}`,
+      enabled: true,
+      type: 'dnat',
+      description: dnatDesc.trim() || `Forward :${dnatExtPort} → ${dnatToAddr}${dnatToPort ? ':' + dnatToPort : ''}`,
+      protocol: dnatProto,
+      extPort: dnatExtPort.trim(),
+      toAddr: dnatToAddr.trim(),
+      toPort: dnatToPort.trim(),
+    }
+    onChange([...natRules, r])
+    setDnatExtPort('80')
+    setDnatToAddr('')
+    setDnatToPort('')
+    setDnatDesc('')
+  }
+
+  function addMasquerade() {
+    const r: NatRule = {
+      id: `nat-${Date.now()}`,
+      enabled: true,
+      type: 'masquerade',
+      description: masqDesc.trim() || `Masquerade ${masqZone} zone`,
+      srcZone: masqZone,
+    }
+    onChange([...natRules, r])
+    setMasqDesc('')
+  }
+
+  function removeRule(id: string) {
+    onChange(natRules.filter(r => r.id !== id))
+  }
+
+  function toggleRule(id: string) {
+    onChange(natRules.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r))
+  }
+
+  const activeCount = natRules.filter(r => r.enabled).length
+
+  const dnatNftPreview = dnatExtPort && dnatToAddr
+    ? `${dnatProto} dport ${dnatExtPort.includes(',') ? '{ ' + dnatExtPort + ' }' : dnatExtPort} dnat to ${dnatToAddr}${dnatToPort ? ':' + dnatToPort : ''}`
+    : null
+
+  const masqNftPreview = masqZone && masqZone !== 'any' && masqZone !== 'external'
+    ? `ip saddr @${masqZone.toUpperCase()} masquerade`
+    : 'masquerade'
+
+  return (
+    <div className="rounded-lg border border-gray-800 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-400 hover:bg-gray-800/40 transition"
+      >
+        <span className="flex items-center gap-1.5 font-medium text-cyan-400/90">
+          <ArrowRight size={11} />
+          NAT Rules
+          {activeCount > 0 && (
+            <span className="ml-1 text-[9px] bg-cyan-900/40 border border-cyan-700/40 text-cyan-300 px-1.5 py-0.5 rounded">
+              {activeCount}
+            </span>
+          )}
+        </span>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-800 p-3 space-y-3">
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            <code className="font-mono text-cyan-300/80">dnat</code> (port forwarding) redirects inbound
+            traffic on an external port to an internal host. <code className="font-mono text-cyan-300/80">masquerade</code> hides
+            internal source IPs behind the firewall's external IP on outbound traffic. Both generate a
+            separate <code className="font-mono text-cyan-300/80">table ip nat</code> block.
+          </p>
+
+          {/* Existing NAT rules */}
+          {natRules.length > 0 && (
+            <div className="rounded-lg border border-gray-800 overflow-hidden divide-y divide-gray-800/60">
+              {natRules.map(r => (
+                <div key={r.id} className={`flex items-center gap-2 px-2 py-1.5 ${r.enabled ? '' : 'opacity-40'}`}>
+                  <input
+                    type="checkbox"
+                    checked={r.enabled}
+                    onChange={() => toggleRule(r.id)}
+                    className="accent-cyan-500 cursor-pointer flex-shrink-0"
+                  />
+                  <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border flex-shrink-0 ${
+                    r.type === 'dnat'
+                      ? 'bg-cyan-900/50 text-cyan-300 border-cyan-700/40'
+                      : 'bg-teal-900/50 text-teal-300 border-teal-700/40'
+                  }`}>{r.type}</span>
+                  <span className="text-[10px] text-gray-400 flex-1 min-w-0 truncate">{r.description}</span>
+                  <button type="button" onClick={() => removeRule(r.id)} className="text-gray-600 hover:text-red-400 transition flex-shrink-0">
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add NAT rule form */}
+          <div className="rounded-lg border border-gray-700/60 p-2.5 space-y-2">
+            <p className="text-[10px] font-semibold text-gray-400">Add NAT rule</p>
+
+            <div className="flex gap-1">
+              {(['dnat', 'masquerade'] as NatType[]).map(t => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setAddingType(t)}
+                  className={`flex-1 py-1 rounded text-[10px] font-semibold border transition ${
+                    addingType === t
+                      ? t === 'dnat'
+                        ? 'bg-cyan-900/60 text-cyan-300 border-cyan-700/40'
+                        : 'bg-teal-900/60 text-teal-300 border-teal-700/40'
+                      : 'border-gray-700 text-gray-600 hover:text-gray-400'
+                  }`}
+                >
+                  {t === 'dnat' ? 'DNAT (port forward)' : 'Masquerade'}
+                </button>
+              ))}
+            </div>
+
+            {addingType === 'dnat' ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Protocol</label>
+                    <select
+                      className={selectCls}
+                      value={dnatProto}
+                      onChange={e => setDnatProto(e.target.value as 'tcp' | 'udp')}
+                    >
+                      <option value="tcp">TCP</option>
+                      <option value="udp">UDP</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">External port(s)</label>
+                    <input
+                      className={inputCls}
+                      value={dnatExtPort}
+                      onChange={e => setDnatExtPort(e.target.value)}
+                      placeholder="80 or 80,8080"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Forward to IP</label>
+                    <input
+                      className={inputCls}
+                      value={dnatToAddr}
+                      onChange={e => setDnatToAddr(e.target.value)}
+                      placeholder="10.0.0.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Forward to port</label>
+                    <input
+                      className={inputCls}
+                      value={dnatToPort}
+                      onChange={e => setDnatToPort(e.target.value)}
+                      placeholder="8080 (blank = same)"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500 block mb-1">Description</label>
+                  <input
+                    className={inputCls}
+                    value={dnatDesc}
+                    onChange={e => setDnatDesc(e.target.value)}
+                    placeholder="e.g. Forward public HTTP to internal web server"
+                  />
+                </div>
+                {dnatNftPreview && (
+                  <div className="rounded-lg bg-gray-950 px-3 py-2">
+                    <p className="text-[9px] text-gray-600 uppercase tracking-wide font-semibold mb-1">nft output (prerouting chain)</p>
+                    <p className="text-[10px] font-mono text-cyan-300/70">{dnatNftPreview}</p>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={addDnat}
+                  disabled={!dnatExtPort.trim() || !dnatToAddr.trim()}
+                  className="w-full py-1.5 bg-cyan-800 hover:bg-cyan-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
+                >
+                  Add port forward
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Zone to masquerade</label>
+                    <select
+                      className={selectCls}
+                      value={masqZone}
+                      onChange={e => setMasqZone(e.target.value as FWZone)}
+                    >
+                      {ZONES.map(z => <option key={z.value} value={z.value}>{z.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Description</label>
+                    <input
+                      className={inputCls}
+                      value={masqDesc}
+                      onChange={e => setMasqDesc(e.target.value)}
+                      placeholder="e.g. Hide internal IPs on exit"
+                    />
+                  </div>
+                </div>
+                <div className="rounded-lg bg-gray-950 px-3 py-2">
+                  <p className="text-[9px] text-gray-600 uppercase tracking-wide font-semibold mb-1">nft output (postrouting chain)</p>
+                  <p className="text-[10px] font-mono text-teal-300/70">{masqNftPreview}</p>
+                </div>
+                <p className="text-[10px] text-teal-400/60 leading-relaxed">
+                  Outbound packets from the {masqZone} zone will have their source IP replaced with
+                  the firewall's external IP before leaving. Return traffic is automatically un-NAT'd.
+                </p>
+                <button
+                  type="button"
+                  onClick={addMasquerade}
+                  className="w-full py-1.5 bg-teal-800 hover:bg-teal-700 text-white text-xs font-semibold rounded-lg transition"
+                >
+                  Add masquerade rule
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Add rule form ──────────────────────────────────────────────────────────────
 
 const BLANK_RULE: Omit<FirewallRule, 'id'> = {
@@ -1082,6 +1338,12 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
       <DynamicBanPanel
         config={p.dynamicBan}
         onChange={c => setPolicy({ dynamicBan: c })}
+      />
+
+      {/* NAT Rules */}
+      <NatPanel
+        natRules={p.natRules ?? []}
+        onChange={rules => setPolicy({ natRules: rules })}
       />
     </div>
   )
