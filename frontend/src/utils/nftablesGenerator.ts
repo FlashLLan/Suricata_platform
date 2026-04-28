@@ -23,8 +23,8 @@ function parsePorts(ports: string): number[] {
     .filter(p => !isNaN(p) && p > 0)
 }
 
-const LINE  = '─'.repeat(68)
-const THICK = '═'.repeat(72)
+const LINE  = '-'.repeat(68)
+const THICK = '='.repeat(72)
 
 // ── Policy-model path ──────────────────────────────────────────────────────────
 // Called when at least one firewall node has a FirewallPolicy configured.
@@ -127,7 +127,7 @@ function generateFromPolicy(
     const protoLabel = db.targetProtocol === 'any' ? 'any protocol' : db.targetProtocol.toUpperCase()
     const portLabel  = db.targetPort ? `:${db.targetPort}` : '(all ports)'
     L.push(`    # ${LINE}`)
-    L.push(`    # Dynamic ban — sources exceeding ${db.rateThreshold} connections/min on ${protoLabel}${portLabel}`)
+    L.push(`    # Dynamic ban - sources exceeding ${db.rateThreshold} connections/min on ${protoLabel}${portLabel}`)
     L.push(`    #               are banned for ${db.banDurationSec}s`)
     L.push(`    # ${LINE}`)
     L.push(``)
@@ -171,6 +171,9 @@ function generateFromPolicy(
   }
 
   // Helper: emit a chain
+  // nftables only allows 'accept' or 'drop' as chain default policies.
+  // If the user chose 'reject', we use 'drop' as the kernel policy and
+  // append an explicit `reject` rule so clients still get ICMP unreachable.
   function emitChain(
     name: string,
     hook: string,
@@ -180,12 +183,13 @@ function generateFromPolicy(
     rules: FirewallRule[],
     trailerComment: string,
   ) {
+    const kernelPolicy = defaultPolicy === 'reject' ? 'drop' : defaultPolicy
     L.push(`    # ${LINE}`)
     L.push(`    # ${name} chain`)
     L.push(`    # ${LINE}`)
     L.push(``)
     L.push(`    chain ${name.toLowerCase()} {`)
-    L.push(`        type filter hook ${hook} priority ${priority}; policy ${defaultPolicy};`)
+    L.push(`        type filter hook ${hook} priority ${priority}; policy ${kernelPolicy};`)
     L.push(``)
     for (const line of preamble) L.push(line)
     const chainRules = rules.filter(r => r.chain === name.toLowerCase() && r.enabled)
@@ -194,7 +198,11 @@ function generateFromPolicy(
       if (line) L.push(line)
     }
     L.push(``)
-    L.push(`        # ${trailerComment} (default policy)`)
+    if (defaultPolicy === 'reject') {
+      L.push(`        reject                                         # ${trailerComment}`)
+    } else {
+      L.push(`        # ${trailerComment} (default policy)`)
+    }
     L.push(`    }`)
     L.push(``)
   }
@@ -210,30 +218,32 @@ function generateFromPolicy(
       `        icmp type echo-request accept                  # allow ICMP ping`,
       ``,
     ] : [
-      `        # STATELESS MODE: ct state rules omitted — return traffic hits default policy`,
+      `        # STATELESS MODE: ct state rules omitted - return traffic hits default policy`,
       `        iif "lo" accept                                # allow loopback`,
       `        icmp type echo-request accept                  # allow ICMP ping`,
       ``,
     ],
     policy.rules,
-    policy.defaultInput === 'drop' ? 'All other inbound: drop' : 'All other inbound: accept',
+    policy.defaultInput === 'drop' ? 'All other inbound: drop'
+    : policy.defaultInput === 'reject' ? 'All other inbound: reject'
+    : 'All other inbound: accept',
   )
 
   const portKnockPreamble: string[] = pk ? [
-    `        # ── Port knocking ──────────────────────────────────────────────────`,
+    `        # -- Port knocking ------------------------------------------------------------------`,
     `        # Track knock: add source to KNOCK_CLIENTS set, then drop the knock packet`,
     `        tcp dport ${pk.knockPort} add @KNOCK_CLIENTS { ip saddr timeout ${pk.timeoutSec}s } drop`,
     `        # Allow target port only for IPs that completed the knock`,
     `        tcp dport ${pk.targetPort} ip saddr @KNOCK_CLIENTS accept`,
-    `        # ────────────────────────────────────────────────────────────────────`,
+    `        # ----------------------------------------------------------------------------------`,
     ``,
   ] : []
 
   const dynamicBanPreamble: string[] = db ? [
-    `        # ── Dynamic ban ────────────────────────────────────────────────────`,
+    `        # -- Dynamic ban --------------------------------------------------------------------`,
     `        ip saddr @BAN_LIST drop                            # drop already-banned sources`,
     `        ${dynBanMeterLine(db)}`,
-    `        # ────────────────────────────────────────────────────────────────────`,
+    `        # ----------------------------------------------------------------------------------`,
     ``,
   ] : []
 
@@ -252,7 +262,9 @@ function generateFromPolicy(
       ...dynamicBanPreamble,
     ],
     policy.rules,
-    policy.defaultForward === 'drop' ? 'Everything else: DROP' : 'Everything else: ACCEPT',
+    policy.defaultForward === 'drop' ? 'Everything else: DROP'
+    : policy.defaultForward === 'reject' ? 'Everything else: REJECT'
+    : 'Everything else: ACCEPT',
   )
 
   L.push(`    # ${LINE}`)
@@ -260,14 +272,19 @@ function generateFromPolicy(
   L.push(`    # ${LINE}`)
   L.push(``)
   L.push(`    chain output {`)
-  L.push(`        type filter hook output priority filter; policy ${policy.defaultOutput};`)
+  const outKernelPolicy = policy.defaultOutput === 'reject' ? 'drop' : policy.defaultOutput
+  L.push(`        type filter hook output priority filter; policy ${outKernelPolicy};`)
   L.push(``)
   const outputRules = policy.rules.filter(r => r.chain === 'output' && r.enabled)
   for (const rule of outputRules) {
     const line = ruleToNft(rule)
     if (line) L.push(line)
   }
-  L.push(`        # Firewall-originated traffic`)
+  if (policy.defaultOutput === 'reject') {
+    L.push(`        reject                                         # all other outbound traffic`)
+  } else {
+    L.push(`        # Firewall-originated traffic`)
+  }
   L.push(`    }`)
   L.push(``)
 }
@@ -295,7 +312,7 @@ function generateFromZones(
 
   if (activeNamedZones.length > 0) {
     L.push(`    # ${LINE}`)
-    L.push(`    # Zone address sets (inferred from topology — configure firewall policy for precise rules)`)
+    L.push(`    # Zone address sets (inferred from topology - configure firewall policy for precise rules)`)
     L.push(`    # ${LINE}`)
     L.push(``)
     for (const zone of activeNamedZones) {
@@ -338,18 +355,18 @@ function generateFromZones(
   L.push(`        ct state invalid drop`)
   L.push(`        ct state { established, related } accept`)
   L.push(``)
-  if (hasManagement) { L.push(`        ip saddr @MANAGEMENT accept                          # management → anywhere`); L.push(``) }
+  if (hasManagement) { L.push(`        ip saddr @MANAGEMENT accept                          # management -> anywhere`); L.push(``) }
   if (hasInternal) {
-    if (hasDmz) { L.push(`        ip saddr @INTERNAL ip daddr @DMZ accept            # internal → DMZ`); L.push(``) }
-    L.push(`        ip saddr @INTERNAL accept                           # internal → external`)
+    if (hasDmz) { L.push(`        ip saddr @INTERNAL ip daddr @DMZ accept            # internal -> DMZ`); L.push(``) }
+    L.push(`        ip saddr @INTERNAL accept                           # internal -> external`)
     L.push(``)
   }
   if (hasDmz) {
-    L.push(`        ip saddr @DMZ accept                                # DMZ → external`)
+    L.push(`        ip saddr @DMZ accept                                # DMZ -> external`)
     L.push(``)
     const dmzServers = zones.dmz.servers
     if (dmzServers.length > 0) {
-      L.push(`        # External → DMZ: declared service ports only`)
+      L.push(`        # External -> DMZ: declared service ports only`)
       for (const s of dmzServers) {
         const portExpr = s.ports.length === 1 ? s.ports[0].toString() : `{ ${s.ports.join(', ')} }`
         L.push(`        # ${s.label}`)
@@ -357,9 +374,9 @@ function generateFromZones(
       }
       L.push(``)
     }
-    if (hasInternal) { L.push(`        ip saddr @DMZ ip daddr @INTERNAL drop               # DMZ → internal: BLOCKED`); L.push(``) }
+    if (hasInternal) { L.push(`        ip saddr @DMZ ip daddr @INTERNAL drop               # DMZ -> internal: BLOCKED`); L.push(``) }
   }
-  if (hasManagement) { L.push(`        ip daddr @MANAGEMENT drop                           # external → management: BLOCKED`); L.push(``) }
+  if (hasManagement) { L.push(`        ip daddr @MANAGEMENT drop                           # external -> management: BLOCKED`); L.push(``) }
   L.push(`        # Everything else: DROP`)
   L.push(`    }`)
   L.push(``)
@@ -486,7 +503,7 @@ export function buildNftablesPolicySummary(nodes: Node[]): NftablesPolicySummary
       const to    = r.dstSet ? `@${r.dstSet}` : (r.dstZone === 'any' ? 'any' : r.dstZone)
       const proto = r.protocol === 'any' ? '' : ` ${r.protocol.toUpperCase()}`
       const port  = r.dstPort ? `:${r.dstPort}` : ''
-      const desc  = r.description || `${from} → ${to}${proto}${port}`
+      const desc  = r.description || `${from} -> ${to}${proto}${port}`
       return { chain: r.chain, description: desc, action: r.action, rateLimit: r.rateLimit, srcSet: r.srcSet, dstSet: r.dstSet, srcZone: r.srcZone, dstZone: r.dstZone }
     })
 
@@ -517,7 +534,7 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
   L.push(`# ${LINE}`)
   L.push(`# Policy summary (human-readable)`)
   L.push(`# ${LINE}`)
-  L.push(`# Mode     : ${s.mode === 'policy' ? 'Configured via Firewall Policy panel' : 'Zone-inferred — no explicit policy set on firewall node'}`)
+  L.push(`# Mode     : ${s.mode === 'policy' ? 'Configured via Firewall Policy panel' : 'Zone-inferred - no explicit policy set on firewall node'}`)
   L.push(`# Firewall : ${s.firewallLabel}${s.firewallIp ? '  (' + s.firewallIp + ')' : ''}`)
   L.push(`#`)
   L.push(`# Chain defaults:`)
@@ -533,11 +550,11 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
       const rl  = r.rateLimit ? `  [limit ${r.rateLimit.pps}pps burst ${r.rateLimit.burst}]` : ''
       const src = r.srcSet ? `@${r.srcSet.toUpperCase()}` : (r.srcZone ?? 'any')
       const dst = r.dstSet ? `@${r.dstSet.toUpperCase()}` : (r.dstZone ?? 'any')
-      L.push(`#   ${c}  ${a}${rl}  ${src}→${dst}  ${r.description}`)
+      L.push(`#   ${c}  ${a}${rl}  ${src}->${dst}  ${r.description}`)
     }
   } else {
     L.push(`#`)
-    L.push(`# No explicit rules — chain default policies apply to all traffic.`)
+    L.push(`# No explicit rules - chain default policies apply to all traffic.`)
   }
   if (s.ipSetCount > 0) {
     L.push(`#`)
@@ -545,13 +562,13 @@ function _policySummaryLines(s: NftablesPolicySummary): string[] {
   }
   if (s.portKnocking) {
     L.push(`#`)
-    L.push(`# Port knocking: knock :${s.portKnocking.knockPort} → unlocks :${s.portKnocking.targetPort} for ${s.portKnocking.timeoutSec}s`)
+    L.push(`# Port knocking: knock :${s.portKnocking.knockPort} -> unlocks :${s.portKnocking.targetPort} for ${s.portKnocking.timeoutSec}s`)
   }
   if (s.dynamicBan) {
     const db = s.dynamicBan
     const portStr = db.targetPort ? `:${db.targetPort}` : '(all ports)'
     L.push(`#`)
-    L.push(`# Dynamic ban: ${db.rateThreshold} conn/min on ${db.targetProtocol.toUpperCase()}${portStr} → ban for ${db.banDurationSec}s`)
+    L.push(`# Dynamic ban: ${db.rateThreshold} conn/min on ${db.targetProtocol.toUpperCase()}${portStr} -> ban for ${db.banDurationSec}s`)
   }
   if (s.natRuleCount > 0) {
     L.push(`#`)
@@ -589,8 +606,8 @@ function _deploymentNotesLines(fwIp: string): string[] {
     `#`,
     `# 6. Suricata + nftables placement:`,
     `#       IDS sensors UPSTREAM of this firewall (${fwIp || 'this host'}) see all traffic`,
-    `#       before it is filtered — visibility is preserved even for blocked attacks.`,
-    `#       Sensors DOWNSTREAM only see forwarded traffic — blocked attacks create a`,
+    `#       before it is filtered - visibility is preserved even for blocked attacks.`,
+    `#       Sensors DOWNSTREAM only see forwarded traffic - blocked attacks create a`,
     `#       detection blind spot. Ideal: run Suricata on the firewall host itself,`,
     `#       using AF_PACKET before the nftables FORWARD hook fires.`,
     `# ${LINE}`,
@@ -646,8 +663,8 @@ export function buildNftablesConfig(
     fwNote = [
       `# Firewall device: ${fw.label}  (${fw.ip})`,
       policy
-        ? `# Policy configured via Firewall Policy panel — ${policy.rules.filter(r => r.enabled).length} active rule(s)`
-        : `# NOTE: No policy configured yet — output is zone-inferred. Open the firewall`,
+        ? `# Policy configured via Firewall Policy panel - ${policy.rules.filter(r => r.enabled).length} active rule(s)`
+        : `# NOTE: No policy configured yet - output is zone-inferred. Open the firewall`,
       policy
         ? `# Apply this file on that host:  sudo nft -f <filename>`
         : `#       node in the canvas, open "Firewall Policy", configure rules, then re-export.`,
@@ -658,7 +675,7 @@ export function buildNftablesConfig(
       `# Firewall devices: ${list}`,
       configuredFw
         ? `# Using policy from: ${getData(configuredFw).label}`
-        : `# NOTE: No policy configured on any firewall — output is zone-inferred.`,
+        : `# NOTE: No policy configured on any firewall - output is zone-inferred.`,
       `# Deploy on each firewall host as appropriate for your segment.`,
     ].join('\n')
   }
@@ -667,15 +684,15 @@ export function buildNftablesConfig(
 
   // File header
   L.push(`#!/usr/sbin/nft -f`)
-  L.push(`# ${'═'.repeat(72)}`)
-  L.push(`# Suricata Learning Platform — nftables ruleset`)
+  L.push(`# ${'='.repeat(72)}`)
+  L.push(`# Suricata Learning Platform -- nftables ruleset`)
   L.push(`# Project:   ${projectName}`)
   L.push(`# Generated: ${now}`)
-  L.push(`# ${'─'.repeat(72)}`)
+  L.push(`# ${'-'.repeat(72)}`)
   L.push(`# Apply:     sudo nft -f <this-file>`)
   L.push(`# Verify:    sudo nft list ruleset`)
   L.push(`# Flush all: sudo nft flush ruleset`)
-  L.push(`# ${'─'.repeat(72)}`)
+  L.push(`# ${'-'.repeat(72)}`)
   L.push(fwNote)
   L.push(``)
   const summary = buildNftablesPolicySummary(nodes)
@@ -701,10 +718,10 @@ export function buildNftablesConfig(
   }
 
   // Optional logging block
-  L.push(`# ${'─'.repeat(72)}`)
+  L.push(`# ${'-'.repeat(72)}`)
   L.push(`# Optional: log dropped forward packets for debugging`)
   L.push(`# Uncomment, reload, then: sudo journalctl -k -f | grep "nft drop"`)
-  L.push(`# ${'─'.repeat(72)}`)
+  L.push(`# ${'-'.repeat(72)}`)
   L.push(``)
   L.push(`# table inet logging {`)
   L.push(`#     chain forward_log {`)
@@ -715,5 +732,5 @@ export function buildNftablesConfig(
 
   for (const line of _deploymentNotesLines(summary.firewallIp)) L.push(line)
 
-  return L.join('\n')
+  return L.join('\n') + '\n'
 }

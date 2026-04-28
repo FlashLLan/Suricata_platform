@@ -151,7 +151,7 @@ def validate_nftables_config(config: str) -> dict:
             "docker_available": True,
         }
 
-    config_bytes = config.encode("utf-8")
+    config_bytes = config.replace('\r\n', '\n').replace('\r', '\n').encode("utf-8")
     archive = _make_tar_archive([("config.nft", config_bytes)])
 
     container = client.containers.create(
@@ -257,21 +257,36 @@ def _get_logs(container) -> str:
 def _parse_nft_errors(raw: str) -> list[str]:
     """
     Extract meaningful error lines from nft output.
-    nft writes errors like:
+    nft formats each error as three lines:
         /tmp/config.nft:10:5-20: Error: syntax error, unexpected ...
-    We strip the file path prefix and return the human-readable part.
+        <source context line>
+        ^~~~
+    Only the first line carries the actual message; the other two are display
+    context. We collect only path-prefixed lines, strip the file path, and
+    keep the line:col location so the user knows exactly which line failed.
     """
     errors: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
-        # Strip "/tmp/config.nft:row:col-col: " prefix
-        if line.startswith("/tmp/config.nft:") or line.startswith("config.nft:"):
-            colon_after_path = line.find(": ", line.index(":") + 1)
-            if colon_after_path != -1:
-                line = line[colon_after_path + 2:].strip()
-        errors.append(line)
+        prefix = None
+        if line.startswith("/tmp/config.nft:"):
+            prefix = "/tmp/config.nft:"
+        elif line.startswith("config.nft:"):
+            prefix = "config.nft:"
+        if prefix:
+            rest = line[len(prefix):]          # "10:5-20: Error: syntax error..."
+            # Extract location (first token before the next ": ")
+            loc_end = rest.find(": ")
+            if loc_end != -1:
+                location = rest[:loc_end]      # "10:5-20"
+                message  = rest[loc_end + 2:]  # "Error: syntax error, unexpected junk"
+                line_num = location.split(":")[0]
+                errors.append(f"Line {line_num}: {message}")
+            else:
+                errors.append(rest)
+        # Skip source-context lines and caret (^) lines — they are display decoration
     return errors if errors else [raw] if raw else ["nft exited with a non-zero code (no output)."]
 
 

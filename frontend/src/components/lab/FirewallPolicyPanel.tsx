@@ -151,6 +151,34 @@ const PRESETS: Preset[] = [
   },
 ]
 
+// ── Validation helpers ─────────────────────────────────────────────────────────
+
+function validatePortInput(value: string): string | null {
+  if (!value.trim()) return null
+  const parts = value.split(',')
+  for (const part of parts) {
+    const trimmed = part.trim()
+    if (!trimmed) return 'Remove trailing commas'
+    const rangeParts = trimmed.split(':')
+    if (rangeParts.length > 2) return `Invalid range: "${trimmed}"`
+    for (const p of rangeParts) {
+      const n = parseInt(p.trim(), 10)
+      if (isNaN(n) || n < 1 || n > 65535 || String(n) !== p.trim())
+        return `"${p.trim()}" is not a valid port (1–65535)`
+    }
+  }
+  return null
+}
+
+function validateIPInput(value: string): string | null {
+  if (!value.trim()) return null
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/(\d{1,2}))?$/.exec(value.trim())
+  if (!m) return 'Enter a valid IPv4 address (e.g. 10.0.0.5 or 192.168.1.0/24)'
+  if ([m[1], m[2], m[3], m[4]].some(o => parseInt(o) > 255)) return 'Each octet must be 0–255'
+  if (m[6] !== undefined && parseInt(m[6]) > 32) return 'CIDR prefix must be 0–32'
+  return null
+}
+
 // ── Small helpers ──────────────────────────────────────────────────────────────
 
 function ActionBadge({ action }: { action: FWAction }) {
@@ -493,6 +521,7 @@ function DynamicBanPanel({
   onChange,
 }: { config: DynamicBanConfig | undefined; onChange: (c: DynamicBanConfig | undefined) => void }) {
   const [open, setOpen] = useState(false)
+  const [portError, setPortError] = useState<string | null>(null)
   const enabled = config !== undefined
 
   const defaults: DynamicBanConfig = {
@@ -565,12 +594,16 @@ function DynamicBanPanel({
                 <div>
                   <label className="text-[10px] text-gray-500 block mb-1">Port(s) to watch</label>
                   <input
-                    className={inputCls}
+                    className={`${inputCls} ${portError ? 'border-red-600' : ''}`}
                     value={c.targetPort}
-                    onChange={e => onChange({ ...c, targetPort: e.target.value })}
+                    onChange={e => {
+                      onChange({ ...c, targetPort: e.target.value })
+                      setPortError(validatePortInput(e.target.value))
+                    }}
                     placeholder="22  or  22,80  or leave blank"
                     disabled={c.targetProtocol === 'any'}
                   />
+                  {portError && <p className="text-[10px] text-red-400 mt-1">{portError}</p>}
                 </div>
               </div>
 
@@ -629,9 +662,12 @@ function NatPanel({
   const [dnatDesc, setDnatDesc] = useState('')
   const [masqZone, setMasqZone] = useState<FWZone>('internal')
   const [masqDesc, setMasqDesc] = useState('')
+  const [extPortError, setExtPortError] = useState<string | null>(null)
+  const [toAddrError,  setToAddrError]  = useState<string | null>(null)
+  const [toPortError,  setToPortError]  = useState<string | null>(null)
 
   function addDnat() {
-    if (!dnatExtPort.trim() || !dnatToAddr.trim()) return
+    if (!dnatExtPort.trim() || !dnatToAddr.trim() || extPortError || toAddrError || toPortError) return
     const r: NatRule = {
       id: `nat-${Date.now()}`,
       enabled: true,
@@ -647,6 +683,9 @@ function NatPanel({
     setDnatToAddr('')
     setDnatToPort('')
     setDnatDesc('')
+    setExtPortError(null)
+    setToAddrError(null)
+    setToPortError(null)
   }
 
   function addMasquerade() {
@@ -772,31 +811,34 @@ function NatPanel({
                   <div>
                     <label className="text-[10px] text-gray-500 block mb-1">External port(s)</label>
                     <input
-                      className={inputCls}
+                      className={`${inputCls} ${extPortError ? 'border-red-600' : ''}`}
                       value={dnatExtPort}
-                      onChange={e => setDnatExtPort(e.target.value)}
+                      onChange={e => { setDnatExtPort(e.target.value); setExtPortError(validatePortInput(e.target.value)) }}
                       placeholder="80 or 80,8080"
                     />
+                    {extPortError && <p className="text-[10px] text-red-400 mt-1">{extPortError}</p>}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-[10px] text-gray-500 block mb-1">Forward to IP</label>
                     <input
-                      className={inputCls}
+                      className={`${inputCls} ${toAddrError ? 'border-red-600' : ''}`}
                       value={dnatToAddr}
-                      onChange={e => setDnatToAddr(e.target.value)}
+                      onChange={e => { setDnatToAddr(e.target.value); setToAddrError(validateIPInput(e.target.value)) }}
                       placeholder="10.0.0.5"
                     />
+                    {toAddrError && <p className="text-[10px] text-red-400 mt-1">{toAddrError}</p>}
                   </div>
                   <div>
                     <label className="text-[10px] text-gray-500 block mb-1">Forward to port</label>
                     <input
-                      className={inputCls}
+                      className={`${inputCls} ${toPortError ? 'border-red-600' : ''}`}
                       value={dnatToPort}
-                      onChange={e => setDnatToPort(e.target.value)}
+                      onChange={e => { setDnatToPort(e.target.value); setToPortError(validatePortInput(e.target.value)) }}
                       placeholder="8080 (blank = same)"
                     />
+                    {toPortError && <p className="text-[10px] text-red-400 mt-1">{toPortError}</p>}
                   </div>
                 </div>
                 <div>
@@ -817,7 +859,7 @@ function NatPanel({
                 <button
                   type="button"
                   onClick={addDnat}
-                  disabled={!dnatExtPort.trim() || !dnatToAddr.trim()}
+                  disabled={!dnatExtPort.trim() || !dnatToAddr.trim() || !!extPortError || !!toAddrError || !!toPortError}
                   className="w-full py-1.5 bg-cyan-800 hover:bg-cyan-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
                 >
                   Add port forward
@@ -885,9 +927,15 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
   const [rlBurst,   setRlBurst]   = useState(10)
   const [srcSet,    setSrcSet]    = useState('')
   const [dstSet,    setDstSet]    = useState('')
+  const [portError, setPortError] = useState<string | null>(null)
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm(f => ({ ...f, [k]: v }))
+  }
+
+  function setPort(v: string) {
+    set('dstPort', v)
+    setPortError(validatePortInput(v))
   }
 
   function applyServiceFill(label: string) {
@@ -902,6 +950,7 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
   }
 
   function handleAdd() {
+    if (portError) return
     onAdd({
       id: `rule-${Date.now()}`,
       ...form,
@@ -910,6 +959,7 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
       rateLimit: (rlEnabled && form.action === 'accept') ? { pps: rlPps, burst: rlBurst } : undefined,
     })
     setForm(BLANK_RULE)
+    setPortError(null)
     setRlEnabled(false)
     setRlPps(5)
     setRlBurst(10)
@@ -1014,12 +1064,13 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
             <div>
               <label className="text-[10px] text-gray-500 block mb-1">Dst port</label>
               <input
-                className={inputCls}
+                className={`${inputCls} ${portError ? 'border-red-600' : ''}`}
                 value={form.dstPort}
-                onChange={e => set('dstPort', e.target.value)}
+                onChange={e => setPort(e.target.value)}
                 placeholder="80 or 80,443"
                 disabled={form.protocol === 'icmp' || form.protocol === 'any'}
               />
+              {portError && <p className="text-[10px] text-red-400 mt-1">{portError}</p>}
             </div>
           </div>
 
@@ -1101,7 +1152,8 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
           <button
             type="button"
             onClick={handleAdd}
-            className="w-full py-1.5 bg-orange-700 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition"
+            disabled={!!portError}
+            className="w-full py-1.5 bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
           >
             Add rule
           </button>
