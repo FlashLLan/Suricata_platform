@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import {
   X, Download, Copy, Check, FileText, Settings, Terminal,
-  ChevronRight, ChevronLeft, Network, Shield, Eye,
+  ChevronRight, ChevronLeft, Network, Shield, Eye, Loader2, AlertTriangle, CheckCircle2,
 } from 'lucide-react'
 import type { Node, Edge } from '@xyflow/react'
 import type { ActiveRule, DeviceData } from '../../types/lab'
 import { PREDEFINED_RULES } from '../../data/rules'
 import { resolveHomeNet } from '../../utils/exportHelpers'
 import { buildNftablesConfig, buildNftablesPolicySummary } from '../../utils/nftablesGenerator'
+import { validateNftablesConfig } from '../../api/nftables'
+import type { NftablesValidationResult } from '../../api/nftables'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -1093,6 +1095,8 @@ function OutputStep({
   onBack: () => void
 }) {
   const [tab, setTab] = useState<ExportTab>('rules')
+  const [validating, setValidating] = useState(false)
+  const [validationResult, setValidationResult] = useState<NftablesValidationResult | null>(null)
   const slug = projectName.toLowerCase().replace(/\s+/g, '-') || 'lab'
 
   const nodeRuleCount    = collectNodeRules(nodes).reduce((s, g) => s + g.rules.length, 0)
@@ -1101,6 +1105,24 @@ function OutputStep({
   const inventoryContent = buildInventoryText(projectName, nodes, setup)
   const nftablesContent  = buildNftablesConfig(projectName, nodes, edges)
   const guideContent     = buildDeploymentGuide(setup)
+
+  async function handleValidate() {
+    setValidating(true)
+    setValidationResult(null)
+    try {
+      const result = await validateNftablesConfig(nftablesContent)
+      setValidationResult(result)
+    } catch {
+      setValidationResult({
+        valid: false,
+        errors: ['Request failed — check that the backend is running.'],
+        raw_output: '',
+        docker_available: false,
+      })
+    } finally {
+      setValidating(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
@@ -1122,10 +1144,69 @@ function OutputStep({
               <div className="flex items-center justify-between flex-shrink-0">
                 <p className="text-[10px] text-gray-500 font-mono">{filename}</p>
                 <div className="flex items-center gap-2">
+                  {tab === 'nftables' && (
+                    <button
+                      type="button"
+                      onClick={handleValidate}
+                      disabled={validating}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold border border-orange-700/50 bg-orange-900/20 text-orange-300 hover:bg-orange-900/40 disabled:opacity-50 transition"
+                    >
+                      {validating
+                        ? <><Loader2 size={10} className="animate-spin" /> Validating…</>
+                        : <><Shield size={10} /> Validate in Docker</>
+                      }
+                    </button>
+                  )}
                   <CopyButton text={content} />
                   <DownloadButton content={content} filename={filename} />
                 </div>
               </div>
+              {tab === 'nftables' && validationResult && (
+                <div className={`rounded-lg border p-3 flex-shrink-0 ${
+                  !validationResult.docker_available
+                    ? 'border-gray-700/50 bg-gray-900/40'
+                    : validationResult.valid
+                      ? 'border-green-700/50 bg-green-950/20'
+                      : 'border-red-700/50 bg-red-950/20'
+                }`}>
+                  {!validationResult.docker_available ? (
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={12} className="text-gray-500 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-[11px] font-semibold text-gray-400">Docker unavailable</p>
+                        <p className="text-[10px] text-gray-500 mt-0.5 leading-relaxed">{validationResult.errors[0]}</p>
+                        <p className="text-[10px] text-gray-600 mt-1">Start Docker Desktop and try again.</p>
+                      </div>
+                    </div>
+                  ) : validationResult.valid ? (
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 size={13} className="text-green-400 flex-shrink-0" />
+                      <div>
+                        <p className="text-[11px] font-semibold text-green-300">Config is valid</p>
+                        <p className="text-[10px] text-green-600 mt-0.5">
+                          <code className="font-mono">nft --check</code> passed — syntax and structure are correct.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle size={12} className="text-red-400 flex-shrink-0" />
+                        <p className="text-[11px] font-semibold text-red-300">
+                          {validationResult.errors.length} error{validationResult.errors.length !== 1 ? 's' : ''} found
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        {validationResult.errors.map((err, i) => (
+                          <p key={i} className="text-[10px] font-mono text-red-300/80 leading-relaxed pl-2 border-l border-red-700/40">
+                            {err}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <CodeBlock content={content} color={color} />
             </>
           )
