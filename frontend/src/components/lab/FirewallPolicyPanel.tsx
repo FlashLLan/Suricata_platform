@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Info, Database, Key, Ban, ArrowRight } from 'lucide-react'
+import { Shield, Plus, Trash2, ChevronDown, ChevronRight, Database, Key, Ban, ArrowRight, ArrowUp, ArrowDown, Pencil } from 'lucide-react'
 import type {
   FirewallPolicy, FirewallRule, FirewallIPSet, PortKnockConfig, DynamicBanConfig, NatRule, NatType,
   FWChain, FWProtocol, FWAction, FWZone,
@@ -198,6 +198,15 @@ function chainColor(chain: FWChain) {
 
 function nftName(name: string) {
   return name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+}
+
+function Detail({ label, value, mono, wide }: { label: string; value: string; mono?: boolean; wide?: boolean }) {
+  return (
+    <div className={wide ? 'col-span-2' : ''}>
+      <p className="text-[9px] uppercase tracking-wide text-gray-600 mb-0.5">{label}</p>
+      <p className={`text-[11px] text-gray-300 ${mono ? 'font-mono' : ''}`}>{value}</p>
+    </div>
+  )
 }
 
 const selectCls = 'w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-white text-xs focus:outline-none focus:ring-1 focus:ring-orange-500 cursor-pointer'
@@ -662,6 +671,7 @@ function NatPanel({
   const [dnatDesc, setDnatDesc] = useState('')
   const [masqZone, setMasqZone] = useState<FWZone>('internal')
   const [masqDesc, setMasqDesc] = useState('')
+  const [expandedNat, setExpandedNat] = useState<string | null>(null)
   const [extPortError, setExtPortError] = useState<string | null>(null)
   const [toAddrError,  setToAddrError]  = useState<string | null>(null)
   const [toPortError,  setToPortError]  = useState<string | null>(null)
@@ -750,22 +760,56 @@ function NatPanel({
           {natRules.length > 0 && (
             <div className="rounded-lg border border-gray-800 overflow-hidden divide-y divide-gray-800/60">
               {natRules.map(r => (
-                <div key={r.id} className={`flex items-center gap-2 px-2 py-1.5 ${r.enabled ? '' : 'opacity-40'}`}>
-                  <input
-                    type="checkbox"
-                    checked={r.enabled}
-                    onChange={() => toggleRule(r.id)}
-                    className="accent-cyan-500 cursor-pointer flex-shrink-0"
-                  />
-                  <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border flex-shrink-0 ${
-                    r.type === 'dnat'
-                      ? 'bg-cyan-900/50 text-cyan-300 border-cyan-700/40'
-                      : 'bg-teal-900/50 text-teal-300 border-teal-700/40'
-                  }`}>{r.type}</span>
-                  <span className="text-[10px] text-gray-400 flex-1 min-w-0 truncate">{r.description}</span>
-                  <button type="button" onClick={() => removeRule(r.id)} className="text-gray-600 hover:text-red-400 transition flex-shrink-0">
-                    <Trash2 size={11} />
-                  </button>
+                <div key={r.id} className={r.enabled ? '' : 'opacity-40'}>
+                  {/* Summary row */}
+                  <div
+                    className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-gray-800/30 transition select-none"
+                    onClick={() => setExpandedNat(expandedNat === r.id ? null : r.id)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={r.enabled}
+                      onChange={e => { e.stopPropagation(); toggleRule(r.id) }}
+                      className="accent-cyan-500 cursor-pointer flex-shrink-0"
+                    />
+                    <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border flex-shrink-0 ${
+                      r.type === 'dnat'
+                        ? 'bg-cyan-900/50 text-cyan-300 border-cyan-700/40'
+                        : 'bg-teal-900/50 text-teal-300 border-teal-700/40'
+                    }`}>{r.type}</span>
+                    <span className="text-[10px] text-gray-400 flex-1 min-w-0 truncate">{r.description}</span>
+                    <span className="text-gray-600 flex-shrink-0">
+                      {expandedNat === r.id ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); removeRule(r.id) }}
+                      className="text-gray-600 hover:text-red-400 transition flex-shrink-0"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+
+                  {/* Expanded NAT detail */}
+                  {expandedNat === r.id && (
+                    <div className="px-3 pt-2 pb-3 bg-gray-900/50 border-t border-gray-800/40">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                        <Detail label="Type" value={r.type === 'dnat' ? 'DNAT (port forward)' : 'Masquerade'} />
+                        {r.type === 'dnat' ? (
+                          <>
+                            <Detail label="Protocol"     value={(r.protocol ?? 'tcp').toUpperCase()} />
+                            <Detail label="External port" value={r.extPort ?? ''} mono />
+                            <Detail label="Forward to"   value={`${r.toAddr ?? ''}${r.toPort ? ':' + r.toPort : ''}`} mono />
+                          </>
+                        ) : (
+                          <Detail label="Zone" value={r.srcZone ?? 'any'} />
+                        )}
+                        {r.description && (
+                          <Detail label="Description" value={r.description} wide />
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1165,25 +1209,74 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
 
 // ── Rule list row ──────────────────────────────────────────────────────────────
 
-function RuleRow({ rule, onToggle, onRemove }: {
+function RuleRow({ rule, ipSets, isFirst, isLast, onToggle, onRemove, onEdit, onMoveUp, onMoveDown }: {
   rule: FirewallRule
+  ipSets: FirewallIPSet[]
+  isFirst: boolean
+  isLast: boolean
   onToggle: () => void
   onRemove: () => void
+  onEdit: (updated: FirewallRule) => void
+  onMoveUp: () => void
+  onMoveDown: () => void
 }) {
-  const [showDetail, setShowDetail] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [editing,  setEditing]  = useState(false)
+
+  // Edit form state — reset from rule whenever edit starts
+  const [eChain,     setEChain]     = useState<FWChain>(rule.chain)
+  const [eSrcZone,   setESrcZone]   = useState<FWZone>(rule.srcZone)
+  const [eDstZone,   setEDstZone]   = useState<FWZone>(rule.dstZone)
+  const [eProtocol,  setEProtocol]  = useState<FWProtocol>(rule.protocol)
+  const [eDstPort,   setEDstPort]   = useState(rule.dstPort)
+  const [eAction,    setEAction]    = useState<FWAction>(rule.action)
+  const [eDesc,      setEDesc]      = useState(rule.description)
+  const [eRlEnabled, setERlEnabled] = useState(!!rule.rateLimit)
+  const [eRlPps,     setERlPps]     = useState(rule.rateLimit?.pps ?? 5)
+  const [eRlBurst,   setERlBurst]   = useState(rule.rateLimit?.burst ?? 10)
+  const [eSrcSet,    setESrcSet]    = useState(rule.srcSet ?? '')
+  const [eDstSet,    setEDstSet]    = useState(rule.dstSet ?? '')
+  const [ePortErr,   setEPortErr]   = useState<string | null>(null)
+
+  function startEdit() {
+    setEChain(rule.chain); setESrcZone(rule.srcZone); setEDstZone(rule.dstZone)
+    setEProtocol(rule.protocol); setEDstPort(rule.dstPort); setEAction(rule.action)
+    setEDesc(rule.description); setERlEnabled(!!rule.rateLimit)
+    setERlPps(rule.rateLimit?.pps ?? 5); setERlBurst(rule.rateLimit?.burst ?? 10)
+    setESrcSet(rule.srcSet ?? ''); setEDstSet(rule.dstSet ?? ''); setEPortErr(null)
+    setEditing(true); setExpanded(true)
+  }
+
+  function cancelEdit() { setEditing(false); setExpanded(false) }
+
+  function saveEdit() {
+    if (ePortErr) return
+    onEdit({
+      ...rule,
+      chain: eChain, srcZone: eSrcZone, dstZone: eDstZone,
+      protocol: eProtocol, dstPort: eDstPort, action: eAction, description: eDesc,
+      srcSet: eSrcSet || undefined, dstSet: eDstSet || undefined,
+      rateLimit: (eRlEnabled && eAction === 'accept') ? { pps: eRlPps, burst: eRlBurst } : undefined,
+    })
+    setEditing(false); setExpanded(false)
+  }
+
   const portLabel = rule.dstPort ? `:${rule.dstPort}` : ''
   const protoLabel = rule.protocol === 'any' ? 'any' : `${rule.protocol}${portLabel}`
-
   const srcLabel = rule.srcSet ? `@${nftName(rule.srcSet)}` : rule.srcZone
   const dstLabel = rule.dstSet ? `@${nftName(rule.dstSet)}` : rule.dstZone
 
   return (
     <div className={`border-b border-gray-800/50 last:border-0 transition ${rule.enabled ? '' : 'opacity-40'}`}>
-      <div className="flex items-center gap-1.5 px-2 py-1.5">
+      {/* Summary row */}
+      <div
+        className={`flex items-center gap-1.5 px-2 py-1.5 select-none transition ${editing ? '' : 'cursor-pointer hover:bg-gray-800/30'}`}
+        onClick={() => !editing && setExpanded(e => !e)}
+      >
         <input
           type="checkbox"
           checked={rule.enabled}
-          onChange={onToggle}
+          onChange={e => { e.stopPropagation(); onToggle() }}
           className="accent-orange-500 flex-shrink-0 cursor-pointer"
         />
         <span className={`text-[10px] font-semibold uppercase w-12 flex-shrink-0 ${chainColor(rule.chain)}`}>
@@ -1201,17 +1294,215 @@ function RuleRow({ rule, onToggle, onRemove }: {
           </span>
         )}
         <ActionBadge action={rule.action} />
-        {rule.description && (
-          <button onClick={() => setShowDetail(!showDetail)} className="text-gray-600 hover:text-gray-400 flex-shrink-0">
-            <Info size={11} />
-          </button>
+        {/* Move up / down */}
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onMoveUp() }}
+          disabled={isFirst}
+          title="Move up"
+          className="text-gray-600 hover:text-gray-300 disabled:opacity-20 disabled:cursor-not-allowed flex-shrink-0 transition"
+        >
+          <ArrowUp size={11} />
+        </button>
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onMoveDown() }}
+          disabled={isLast}
+          title="Move down"
+          className="text-gray-600 hover:text-gray-300 disabled:opacity-20 disabled:cursor-not-allowed flex-shrink-0 transition"
+        >
+          <ArrowDown size={11} />
+        </button>
+        {/* Edit toggle */}
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); editing ? cancelEdit() : startEdit() }}
+          title={editing ? 'Cancel edit' : 'Edit rule'}
+          className={`flex-shrink-0 transition ${editing ? 'text-orange-400' : 'text-gray-600 hover:text-gray-300'}`}
+        >
+          <Pencil size={11} />
+        </button>
+        {!editing && (
+          <span className="text-gray-600 flex-shrink-0">
+            {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </span>
         )}
-        <button onClick={onRemove} className="text-gray-600 hover:text-red-400 transition flex-shrink-0">
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onRemove() }}
+          className="text-gray-600 hover:text-red-400 transition flex-shrink-0"
+        >
           <Trash2 size={11} />
         </button>
       </div>
-      {showDetail && rule.description && (
-        <p className="px-3 pb-2 text-[10px] text-gray-500 leading-relaxed">{rule.description}</p>
+
+      {/* Read-only expanded detail */}
+      {expanded && !editing && (
+        <div className="px-3 pt-2 pb-3 bg-gray-900/50 border-t border-gray-800/40">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+            <Detail label="Chain"  value={rule.chain.toUpperCase()} />
+            <Detail label="Action" value={rule.action.charAt(0).toUpperCase() + rule.action.slice(1)} />
+            <Detail label="Source"      value={rule.srcSet ? `@${nftName(rule.srcSet)} (IP set)` : rule.srcZone} />
+            <Detail label="Destination" value={rule.dstSet ? `@${nftName(rule.dstSet)} (IP set)` : rule.dstZone} />
+            <Detail label="Protocol" value={rule.protocol.toUpperCase()} />
+            <Detail label="Dst port"  value={rule.dstPort || 'any'} mono />
+            {rule.rateLimit && (
+              <Detail label="Rate limit" value={`${rule.rateLimit.pps} pps, burst ${rule.rateLimit.burst} pkts`} wide />
+            )}
+            {rule.description && <Detail label="Description" value={rule.description} wide />}
+          </div>
+        </div>
+      )}
+
+      {/* Inline edit form */}
+      {editing && (
+        <div className="px-3 pt-2.5 pb-3 bg-gray-900/60 border-t border-orange-900/30 space-y-2">
+          {/* Chain + Action */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Chain</label>
+              <select className={selectCls} value={eChain} onChange={e => setEChain(e.target.value as FWChain)}>
+                {CHAINS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Action</label>
+              <div className="flex gap-1">
+                {ACTIONS.map(a => (
+                  <button
+                    key={a.value}
+                    type="button"
+                    onClick={() => setEAction(a.value)}
+                    className={`flex-1 py-1 rounded text-[10px] font-semibold border transition ${
+                      eAction === a.value ? a.cls : 'border-gray-700 text-gray-600 hover:text-gray-400'
+                    }`}
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Zones */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Source zone</label>
+              <select className={selectCls} value={eSrcZone} onChange={e => setESrcZone(e.target.value as FWZone)}>
+                {ZONES.map(z => <option key={z.value} value={z.value}>{z.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Dest zone</label>
+              <select className={selectCls} value={eDstZone} onChange={e => setEDstZone(e.target.value as FWZone)}>
+                {ZONES.map(z => <option key={z.value} value={z.value}>{z.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* IP set overrides */}
+          {ipSets.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">
+                  Src IP set <span className="text-indigo-400/70">(overrides zone)</span>
+                </label>
+                <select className={selectCls} value={eSrcSet} onChange={e => setESrcSet(e.target.value)}>
+                  <option value="">— none —</option>
+                  {ipSets.map(s => <option key={s.id} value={s.name}>@{nftName(s.name)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] text-gray-500 block mb-1">
+                  Dst IP set <span className="text-indigo-400/70">(overrides zone)</span>
+                </label>
+                <select className={selectCls} value={eDstSet} onChange={e => setEDstSet(e.target.value)}>
+                  <option value="">— none —</option>
+                  {ipSets.map(s => <option key={s.id} value={s.name}>@{nftName(s.name)}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Protocol + port */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Protocol</label>
+              <select className={selectCls} value={eProtocol} onChange={e => setEProtocol(e.target.value as FWProtocol)}>
+                {PROTOCOLS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500 block mb-1">Dst port</label>
+              <input
+                className={`${inputCls} ${ePortErr ? 'border-red-600' : ''}`}
+                value={eDstPort}
+                onChange={e => { setEDstPort(e.target.value); setEPortErr(validatePortInput(e.target.value)) }}
+                placeholder="80 or 80,443"
+                disabled={eProtocol === 'icmp' || eProtocol === 'any'}
+              />
+              {ePortErr && <p className="text-[10px] text-red-400 mt-1">{ePortErr}</p>}
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="text-[10px] text-gray-500 block mb-1">Description</label>
+            <input className={inputCls} value={eDesc} onChange={e => setEDesc(e.target.value)} placeholder="optional" />
+          </div>
+
+          {/* Rate limit */}
+          {eAction === 'accept' && (
+            <div className="rounded-lg border border-gray-700/60 p-2 space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={eRlEnabled}
+                  onChange={e => setERlEnabled(e.target.checked)}
+                  className="accent-amber-500 cursor-pointer"
+                />
+                <label className="text-[11px] text-gray-300 cursor-pointer">Enable rate limiting</label>
+              </div>
+              {eRlEnabled && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Max packets/sec</label>
+                    <input
+                      type="number" min={1} max={100000} className={inputCls}
+                      value={eRlPps} onChange={e => setERlPps(Math.max(1, parseInt(e.target.value) || 1))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500 block mb-1">Burst (packets)</label>
+                    <input
+                      type="number" min={1} max={100000} className={inputCls}
+                      value={eRlBurst} onChange={e => setERlBurst(Math.max(1, parseInt(e.target.value) || 1))}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Save / Cancel */}
+          <div className="flex gap-2 pt-0.5">
+            <button
+              type="button"
+              onClick={cancelEdit}
+              className="flex-1 py-1.5 border border-gray-700 text-gray-400 hover:text-gray-200 text-xs rounded-lg transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveEdit}
+              disabled={!!ePortErr}
+              className="flex-1 py-1.5 bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
+            >
+              Save changes
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -1249,6 +1540,17 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
 
   function removeRule(id: string) {
     setPolicy({ rules: p.rules.filter(r => r.id !== id) })
+  }
+
+  function editRule(id: string, updated: FirewallRule) {
+    setPolicy({ rules: p.rules.map(r => r.id === id ? updated : r) })
+  }
+
+  function moveRule(idx: number, dir: 'up' | 'down') {
+    const rules = [...p.rules]
+    const swap = dir === 'up' ? idx - 1 : idx + 1
+    ;[rules[idx], rules[swap]] = [rules[swap], rules[idx]]
+    setPolicy({ rules })
   }
 
   function applyPreset(preset: Preset) {
@@ -1360,12 +1662,18 @@ export default function FirewallPolicyPanel({ policy, onChange }: Props) {
           </div>
         ) : (
           <div className="rounded-lg border border-gray-800 overflow-hidden">
-            {p.rules.map(rule => (
+            {p.rules.map((rule, idx) => (
               <RuleRow
                 key={rule.id}
                 rule={rule}
+                ipSets={ipSets}
+                isFirst={idx === 0}
+                isLast={idx === p.rules.length - 1}
                 onToggle={() => toggleRule(rule.id)}
                 onRemove={() => removeRule(rule.id)}
+                onEdit={updated => editRule(rule.id, updated)}
+                onMoveUp={() => moveRule(idx, 'up')}
+                onMoveDown={() => moveRule(idx, 'down')}
               />
             ))}
           </div>
