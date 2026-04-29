@@ -179,6 +179,18 @@ function validateIPInput(value: string): string | null {
   return null
 }
 
+function validateCidrInput(value: string): string | null {
+  if (!value.trim()) return null
+  const parts = value.split(',')
+  for (const part of parts) {
+    const trimmed = part.trim()
+    if (!trimmed) return 'Remove trailing commas'
+    const err = validateIPInput(trimmed)
+    if (err) return err
+  }
+  return null
+}
+
 // ── Small helpers ──────────────────────────────────────────────────────────────
 
 function ActionBadge({ action }: { action: FWAction }) {
@@ -969,9 +981,11 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
   const [rlEnabled, setRlEnabled] = useState(false)
   const [rlPps,     setRlPps]     = useState(5)
   const [rlBurst,   setRlBurst]   = useState(10)
-  const [srcSet,    setSrcSet]    = useState('')
-  const [dstSet,    setDstSet]    = useState('')
-  const [portError, setPortError] = useState<string | null>(null)
+  const [srcSet,      setSrcSet]      = useState('')
+  const [dstSet,      setDstSet]      = useState('')
+  const [srcCidr,     setSrcCidr]     = useState('')
+  const [portError,   setPortError]   = useState<string | null>(null)
+  const [cidrError,   setCidrError]   = useState<string | null>(null)
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm(f => ({ ...f, [k]: v }))
@@ -994,21 +1008,24 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
   }
 
   function handleAdd() {
-    if (portError) return
+    if (portError || cidrError) return
     onAdd({
       id: `rule-${Date.now()}`,
       ...form,
-      srcSet: srcSet || undefined,
-      dstSet: dstSet || undefined,
+      srcSet:  srcSet  || undefined,
+      dstSet:  dstSet  || undefined,
+      srcCidr: srcCidr.trim() || undefined,
       rateLimit: (rlEnabled && form.action === 'accept') ? { pps: rlPps, burst: rlBurst } : undefined,
     })
     setForm(BLANK_RULE)
     setPortError(null)
+    setCidrError(null)
     setRlEnabled(false)
     setRlPps(5)
     setRlBurst(10)
     setSrcSet('')
     setDstSet('')
+    setSrcCidr('')
     setOpen(false)
   }
 
@@ -1067,6 +1084,20 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
                 {ZONES.map(z => <option key={z.value} value={z.value}>{z.label}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Source IP/CIDR */}
+          <div>
+            <label className="text-[10px] text-gray-500 block mb-1">
+              Source IP/CIDR <span className="text-gray-600">(overrides zone — leave blank to use zone)</span>
+            </label>
+            <input
+              className={`${inputCls} ${cidrError ? 'border-red-600' : ''}`}
+              value={srcCidr}
+              onChange={e => { setSrcCidr(e.target.value); setCidrError(validateCidrInput(e.target.value)) }}
+              placeholder="10.0.0.5  or  192.168.1.0/24  or  10.0.0.1, 10.0.0.2"
+            />
+            {cidrError && <p className="text-[10px] text-red-400 mt-1">{cidrError}</p>}
           </div>
 
           {/* IP set overrides (only when sets are defined) */}
@@ -1196,7 +1227,7 @@ function AddRuleForm({ onAdd, ipSets }: { onAdd: (r: FirewallRule) => void; ipSe
           <button
             type="button"
             onClick={handleAdd}
-            disabled={!!portError}
+            disabled={!!portError || !!cidrError}
             className="w-full py-1.5 bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
           >
             Add rule
@@ -1234,37 +1265,44 @@ function RuleRow({ rule, ipSets, isFirst, isLast, onToggle, onRemove, onEdit, on
   const [eRlEnabled, setERlEnabled] = useState(!!rule.rateLimit)
   const [eRlPps,     setERlPps]     = useState(rule.rateLimit?.pps ?? 5)
   const [eRlBurst,   setERlBurst]   = useState(rule.rateLimit?.burst ?? 10)
-  const [eSrcSet,    setESrcSet]    = useState(rule.srcSet ?? '')
-  const [eDstSet,    setEDstSet]    = useState(rule.dstSet ?? '')
+  const [eSrcSet,    setESrcSet]    = useState(rule.srcSet  ?? '')
+  const [eDstSet,    setEDstSet]    = useState(rule.dstSet  ?? '')
+  const [eSrcCidr,   setESrcCidr]  = useState(rule.srcCidr ?? '')
   const [ePortErr,   setEPortErr]   = useState<string | null>(null)
+  const [eCidrErr,   setECidrErr]   = useState<string | null>(null)
 
   function startEdit() {
     setEChain(rule.chain); setESrcZone(rule.srcZone); setEDstZone(rule.dstZone)
     setEProtocol(rule.protocol); setEDstPort(rule.dstPort); setEAction(rule.action)
     setEDesc(rule.description); setERlEnabled(!!rule.rateLimit)
     setERlPps(rule.rateLimit?.pps ?? 5); setERlBurst(rule.rateLimit?.burst ?? 10)
-    setESrcSet(rule.srcSet ?? ''); setEDstSet(rule.dstSet ?? ''); setEPortErr(null)
+    setESrcSet(rule.srcSet ?? ''); setEDstSet(rule.dstSet ?? '')
+    setESrcCidr(rule.srcCidr ?? ''); setEPortErr(null); setECidrErr(null)
     setEditing(true); setExpanded(true)
   }
 
   function cancelEdit() { setEditing(false); setExpanded(false) }
 
   function saveEdit() {
-    if (ePortErr) return
+    if (ePortErr || eCidrErr) return
     onEdit({
       ...rule,
       chain: eChain, srcZone: eSrcZone, dstZone: eDstZone,
       protocol: eProtocol, dstPort: eDstPort, action: eAction, description: eDesc,
-      srcSet: eSrcSet || undefined, dstSet: eDstSet || undefined,
+      srcSet:  eSrcSet.trim()  || undefined,
+      dstSet:  eDstSet.trim()  || undefined,
+      srcCidr: eSrcCidr.trim() || undefined,
       rateLimit: (eRlEnabled && eAction === 'accept') ? { pps: eRlPps, burst: eRlBurst } : undefined,
     })
     setEditing(false); setExpanded(false)
   }
 
-  const portLabel = rule.dstPort ? `:${rule.dstPort}` : ''
+  const portLabel  = rule.dstPort ? `:${rule.dstPort}` : ''
   const protoLabel = rule.protocol === 'any' ? 'any' : `${rule.protocol}${portLabel}`
-  const srcLabel = rule.srcSet ? `@${nftName(rule.srcSet)}` : rule.srcZone
-  const dstLabel = rule.dstSet ? `@${nftName(rule.dstSet)}` : rule.dstZone
+  const srcLabel   = rule.srcCidr?.trim()
+    ? rule.srcCidr.trim()
+    : rule.srcSet ? `@${nftName(rule.srcSet)}` : rule.srcZone
+  const dstLabel   = rule.dstSet ? `@${nftName(rule.dstSet)}` : rule.dstZone
 
   return (
     <div className={`border-b border-gray-800/50 last:border-0 transition ${rule.enabled ? '' : 'opacity-40'}`}>
@@ -1342,7 +1380,11 @@ function RuleRow({ rule, ipSets, isFirst, isLast, onToggle, onRemove, onEdit, on
           <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             <Detail label="Chain"  value={rule.chain.toUpperCase()} />
             <Detail label="Action" value={rule.action.charAt(0).toUpperCase() + rule.action.slice(1)} />
-            <Detail label="Source"      value={rule.srcSet ? `@${nftName(rule.srcSet)} (IP set)` : rule.srcZone} />
+            <Detail
+              label="Source"
+              value={rule.srcCidr?.trim() ? rule.srcCidr.trim() : rule.srcSet ? `@${nftName(rule.srcSet)} (IP set)` : rule.srcZone}
+              mono={!!rule.srcCidr?.trim()}
+            />
             <Detail label="Destination" value={rule.dstSet ? `@${nftName(rule.dstSet)} (IP set)` : rule.dstZone} />
             <Detail label="Protocol" value={rule.protocol.toUpperCase()} />
             <Detail label="Dst port"  value={rule.dstPort || 'any'} mono />
@@ -1398,6 +1440,20 @@ function RuleRow({ rule, ipSets, isFirst, isLast, onToggle, onRemove, onEdit, on
                 {ZONES.map(z => <option key={z.value} value={z.value}>{z.label}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Source IP/CIDR */}
+          <div>
+            <label className="text-[10px] text-gray-500 block mb-1">
+              Source IP/CIDR <span className="text-gray-600">(overrides zone — leave blank to use zone)</span>
+            </label>
+            <input
+              className={`${inputCls} ${eCidrErr ? 'border-red-600' : ''}`}
+              value={eSrcCidr}
+              onChange={e => { setESrcCidr(e.target.value); setECidrErr(validateCidrInput(e.target.value)) }}
+              placeholder="10.0.0.5  or  192.168.1.0/24  or  10.0.0.1, 10.0.0.2"
+            />
+            {eCidrErr && <p className="text-[10px] text-red-400 mt-1">{eCidrErr}</p>}
           </div>
 
           {/* IP set overrides */}
@@ -1496,7 +1552,7 @@ function RuleRow({ rule, ipSets, isFirst, isLast, onToggle, onRemove, onEdit, on
             <button
               type="button"
               onClick={saveEdit}
-              disabled={!!ePortErr}
+              disabled={!!ePortErr || !!eCidrErr}
               className="flex-1 py-1.5 bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition"
             >
               Save changes

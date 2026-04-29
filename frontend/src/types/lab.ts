@@ -60,6 +60,7 @@ export interface FirewallRule {
   rateLimit?: { pps: number; burst: number }  // max packets/sec + burst allowance
   srcSet?: string   // name of a FirewallIPSet; when set, overrides srcZone IP matching
   dstSet?: string   // name of a FirewallIPSet; when set, overrides dstZone IP matching
+  srcCidr?: string  // direct IP/CIDR(s), e.g. "10.0.0.5" or "192.168.0.0/24"; overrides srcSet and srcZone
 }
 
 export interface FirewallPolicy {

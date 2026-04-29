@@ -34,8 +34,15 @@ function ruleToNft(rule: FirewallRule): string {
 
   const parts: string[] = []
 
-  // Source: IP set takes precedence over zone
-  if (rule.srcSet) {
+  // Source: direct CIDR > IP set > zone
+  if (rule.srcCidr?.trim()) {
+    const addrs = rule.srcCidr.split(',').map(s => s.trim()).filter(Boolean)
+    if (addrs.length === 1) {
+      parts.push(`ip saddr ${addrs[0]}`)
+    } else {
+      parts.push(`ip saddr { ${addrs.join(', ')} }`)
+    }
+  } else if (rule.srcSet) {
     parts.push(`ip saddr @${nftSetName(rule.srcSet)}`)
   } else if (rule.srcZone !== 'any') {
     const setMap: Record<string, string> = {
