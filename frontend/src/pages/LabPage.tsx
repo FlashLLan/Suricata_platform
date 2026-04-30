@@ -9,7 +9,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { ArrowLeft, Save, Play, ChevronDown, ChevronUp, AlertTriangle, Download, FileSearch } from 'lucide-react'
 
-import { getProject, updateProject, type Project } from '../api/projects'
+import { getProject, updateProject, listProjects, type Project } from '../api/projects'
 import { useAuthStore } from '../store/authStore'
 import { getEdgeKind, type EdgeKind } from '../utils/edgeSemantics'
 
@@ -109,6 +109,7 @@ export default function LabPage() {
   // ── Inline project rename ────────────────────────────────────────────────
   const [isEditingName, setIsEditingName] = useState(false)
   const [editName, setEditName] = useState('')
+  const [renameError, setRenameError] = useState('')
   const nameInputRef = useRef<HTMLInputElement>(null)
 
   const [nodes, setNodes, onNodesChange] = useNodesState(INITIAL_NODES)
@@ -124,6 +125,7 @@ export default function LabPage() {
   const [showExport, setShowExport] = useState(false)
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
   const [isPanning, setIsPanning] = useState(false)
+  const panCursorEl = useRef<HTMLStyleElement | null>(null)
   // Edge IDs that are animating during simulation (to restore them afterward)
   const animatingEdgeIds = useRef<string[]>([])
 
@@ -158,6 +160,8 @@ export default function LabPage() {
   // Always-current refs so saveSnapshot doesn't capture stale closures
   const nodesRef = useRef<Node[]>(INITIAL_NODES)
   const edgesRef = useRef<Edge[]>(INITIAL_EDGES)
+  const pendingPostSnapshot = useRef(false)
+  const clipboard = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null)
   useEffect(() => { nodesRef.current = nodes }, [nodes])
   useEffect(() => { edgesRef.current = edges }, [edges])
 
@@ -172,8 +176,16 @@ export default function LabPage() {
     historyPtr.current = history.current.length - 1
   }, [])
 
+  // After a deletion, capture the resulting state so Ctrl+Y can redo it
+  useEffect(() => {
+    if (!pendingPostSnapshot.current) return
+    pendingPostSnapshot.current = false
+    saveSnapshot()
+  }, [nodes, edges, saveSnapshot])
+
   const undo = useCallback(() => {
     if (historyPtr.current <= 0) return
+    pendingPostSnapshot.current = false
     historyPtr.current--
     const snap = history.current[historyPtr.current]
     setNodes(snap.nodes)
@@ -181,26 +193,73 @@ export default function LabPage() {
     setSelectedNode(null)
   }, [setNodes, setEdges])
 
-  // Ctrl+Z listener
+  const redo = useCallback(() => {
+    if (historyPtr.current >= history.current.length - 1) return
+    pendingPostSnapshot.current = false
+    historyPtr.current++
+    const snap = history.current[historyPtr.current]
+    setNodes(snap.nodes)
+    setEdges(snap.edges)
+    setSelectedNode(null)
+  }, [setNodes, setEdges])
+
+  // Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+C / Ctrl+V shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.key === 'z') { e.preventDefault(); undo(); return }
+      if (e.key === 'y') { e.preventDefault(); redo(); return }
+      if (e.key === 's') { e.preventDefault(); doSave(); return }
+
+      if (e.key === 'c') {
+        const selected = nodesRef.current.filter(n => n.selected)
+        if (!selected.length) return
         e.preventDefault()
-        undo()
+        const selectedIds = new Set(selected.map(n => n.id))
+        const connectedEdges = edgesRef.current.filter(
+          ed => selectedIds.has(ed.source) && selectedIds.has(ed.target)
+        )
+        clipboard.current = { nodes: selected, edges: connectedEdges }
+        return
+      }
+
+      if (e.key === 'v' && clipboard.current) {
+        e.preventDefault()
+        saveSnapshot()
+        const idMap = new Map<string, string>()
+        const pastedNodes = clipboard.current.nodes.map(n => {
+          const newId = `node-${++nodeIdCounter}`
+          idMap.set(n.id, newId)
+          return { ...n, id: newId, position: { x: n.position.x + 30, y: n.position.y + 30 }, selected: true }
+        })
+        const pastedEdges = clipboard.current.edges.map(ed => ({
+          ...ed,
+          id: `edge-paste-${++nodeIdCounter}`,
+          source: idMap.get(ed.source) ?? ed.source,
+          target: idMap.get(ed.target) ?? ed.target,
+        }))
+        setNodes(nds => [...nds.map(n => ({ ...n, selected: false })), ...pastedNodes])
+        setEdges(eds => [...eds, ...pastedEdges])
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [undo])
+  }, [undo, redo, saveSnapshot, setNodes, setEdges])
 
-  // Intercept remove changes to save snapshot before deleting
+  // Intercept remove changes: save pre-deletion snapshot, then flag to save post-deletion too
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    if (changes.some(c => c.type === 'remove')) saveSnapshot()
+    if (changes.some(c => c.type === 'remove')) {
+      saveSnapshot()
+      pendingPostSnapshot.current = true
+    }
     onNodesChange(changes)
   }, [onNodesChange, saveSnapshot])
 
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
-    if (changes.some(c => c.type === 'remove')) saveSnapshot()
+    if (changes.some(c => c.type === 'remove')) {
+      saveSnapshot()
+      pendingPostSnapshot.current = true
+    }
     onEdgesChange(changes)
   }, [onEdgesChange, saveSnapshot])
 
@@ -445,8 +504,16 @@ export default function LabPage() {
 
   async function commitRename() {
     const trimmed = editName.trim()
+    if (!trimmed || !project) { setIsEditingName(false); return }
+    if (trimmed === project.name) { setIsEditingName(false); return }
+    const all = await listProjects()
+    const duplicate = all.some(p => p.id !== project.id && p.name.toLowerCase() === trimmed.toLowerCase())
+    if (duplicate) {
+      setRenameError('A project with this name already exists')
+      return
+    }
+    setRenameError('')
     setIsEditingName(false)
-    if (!trimmed || !project || trimmed === project.name) return
     const updated = await updateProject(project.id, { name: trimmed })
     setProject(updated)
   }
@@ -460,6 +527,24 @@ export default function LabPage() {
     setSelectedNode(prev =>
       prev?.id === nodeId ? { ...prev, data: data as unknown as Record<string, unknown> } : prev
     )
+    // Recompute edge kinds for every edge touching the changed node
+    setEdges(eds => eds.map(e => {
+      if (e.source !== nodeId && e.target !== nodeId) return e
+      const srcData = e.source === nodeId
+        ? data
+        : (nodesRef.current.find(n => n.id === e.source)?.data as unknown as DeviceData)
+      const tgtData = e.target === nodeId
+        ? data
+        : (nodesRef.current.find(n => n.id === e.target)?.data as unknown as DeviceData)
+      if (!srcData || !tgtData) return e
+      const { kind, label, monitoringOnly, communicationAllowed, crossZone } = getEdgeKind(srcData, tgtData)
+      return {
+        ...e,
+        ...EDGE_STYLES[kind],
+        label: label ?? undefined,
+        data: { edgeKind: kind, monitoringOnly, communicationAllowed, crossZone },
+      }
+    }))
   }
 
   // ── Rule management ───────────────────────────────────────────────────────
@@ -644,17 +729,22 @@ export default function LabPage() {
             </svg>
           </div>
           {isEditingName ? (
-            <input
-              ref={nameInputRef}
-              value={editName}
-              onChange={e => setEditName(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={e => {
-                if (e.key === 'Enter') { e.currentTarget.blur() }
-                if (e.key === 'Escape') { setIsEditingName(false) }
-              }}
-              className="bg-gray-800 border border-indigo-600 rounded px-2 py-0.5 text-sm font-semibold text-white focus:outline-none w-48"
-            />
+            <>
+              <input
+                ref={nameInputRef}
+                value={editName}
+                onChange={e => { setEditName(e.target.value); setRenameError('') }}
+                onBlur={commitRename}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.currentTarget.blur() }
+                  if (e.key === 'Escape') { setIsEditingName(false); setRenameError('') }
+                }}
+                className={`bg-gray-800 border rounded px-2 py-0.5 text-sm font-semibold text-white focus:outline-none w-48 ${renameError ? 'border-red-500' : 'border-indigo-600'}`}
+              />
+              {renameError && (
+                <span className="text-xs text-red-400 whitespace-nowrap">{renameError}</span>
+              )}
+            </>
           ) : (
             <button
               onClick={startRename}
@@ -725,13 +815,32 @@ export default function LabPage() {
           className="flex-1 relative"
           onDrop={onDrop}
           onDragOver={onDragOver}
-          onMouseDown={(e) => { if (e.button === 2) setIsPanning(true) }}
-          onMouseUp={() => setIsPanning(false)}
-          onMouseLeave={() => setIsPanning(false)}
+          onContextMenu={(e) => e.preventDefault()}
+          onMouseDown={(e) => {
+            if (e.button === 2) {
+              e.preventDefault()
+              setIsPanning(true)
+              if (!panCursorEl.current) {
+                const el = document.createElement('style')
+                el.textContent = '*, *::before, *::after { cursor: grabbing !important; }'
+                document.head.appendChild(el)
+                panCursorEl.current = el
+              }
+            }
+          }}
+          onMouseUp={(e) => {
+            if (e.button === 2) {
+              setIsPanning(false)
+              panCursorEl.current?.remove()
+              panCursorEl.current = null
+            }
+          }}
+          onMouseLeave={() => {
+            setIsPanning(false)
+            panCursorEl.current?.remove()
+            panCursorEl.current = null
+          }}
         >
-          {isPanning && (
-            <style>{'.react-flow__pane { cursor: grabbing !important; }'}</style>
-          )}
           <ReactFlow
             nodes={nodes}
             edges={edges}

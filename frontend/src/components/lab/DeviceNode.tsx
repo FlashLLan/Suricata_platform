@@ -51,10 +51,14 @@ function DeviceNode({ data, selected }: NodeProps) {
       `}
       style={{ backdropFilter: 'blur(4px)' }}
     >
-      <Handle type="target" position={Position.Top}    className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
-      <Handle type="source" position={Position.Bottom} className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
-      <Handle type="target" position={Position.Left}   className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
-      <Handle type="source" position={Position.Right}  className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="source" position={Position.Top}    id="top-s"    className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="target" position={Position.Top}    id="top-t"    className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="source" position={Position.Bottom} id="bottom-s" className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="target" position={Position.Bottom} id="bottom-t" className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="source" position={Position.Left}   id="left-s"   className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="target" position={Position.Left}   id="left-t"   className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="source" position={Position.Right}  id="right-s"  className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
+      <Handle type="target" position={Position.Right}  id="right-t"  className="!w-2 !h-2 !bg-gray-500 !border-gray-400" />
 
       <Icon size={24} className={cfg.color} />
 

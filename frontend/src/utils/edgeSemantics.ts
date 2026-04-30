@@ -29,6 +29,15 @@ export interface EdgeSemantics {
 
 const GATEWAY_TYPES = ['router', 'firewall'] as const
 
+function isPrivateIP(ip: string): boolean {
+  const parts = ip.split('.').map(Number)
+  if (parts.length !== 4 || parts.some(isNaN)) return false
+  if (parts[0] === 10) return true
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true
+  if (parts[0] === 192 && parts[1] === 168) return true
+  return false
+}
+
 /**
  * Returns the network prefix of an IP based on its class:
  *   Class A  → first octet        (e.g. 10.x.x.x → "10")
@@ -88,6 +97,24 @@ export function getEdgeKind(srcData: DeviceData, tgtData: DeviceData): EdgeSeman
         monitoringOnly: false,
         communicationAllowed: false,
         crossZone,
+      }
+    }
+  }
+
+  // Public ↔ private IP mismatch — always a zone boundary regardless of zone label
+  if (srcData.ip && tgtData.ip) {
+    const srcPrivate = isPrivateIP(srcData.ip)
+    const tgtPrivate = isPrivateIP(tgtData.ip)
+    if (srcPrivate !== tgtPrivate) {
+      return {
+        kind: 'cross-zone',
+        label: `${srcData.zone} → ${tgtData.zone}`,
+        warning: !isGateway
+          ? `Cross-zone link between private and public address space without a router or firewall.`
+          : undefined,
+        monitoringOnly: false,
+        communicationAllowed: true,
+        crossZone: true,
       }
     }
   }

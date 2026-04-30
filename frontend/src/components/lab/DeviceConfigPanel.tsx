@@ -56,6 +56,16 @@ const CLASS_SUBNET_DEFAULT: Record<IPClass, string> = {
   D: '224.0.0.0/4',
 }
 
+function deriveSubnet(ip: string, cls: IPClass): string {
+  const p = ip.split('.')
+  if (p.length !== 4) return ''
+  if (cls === 'A') return `${p[0]}.0.0.0/8`
+  if (cls === 'B') return `${p[0]}.${p[1]}.0.0/16`
+  if (cls === 'C') return `${p[0]}.${p[1]}.${p[2]}.0/24`
+  if (cls === 'D') return `${p[0]}.0.0.0/4`
+  return ''
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -489,9 +499,12 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
   function handleIPChange(val: string) {
     set('ip', val)
     setIpError(validateIPv4(val))
-    // Auto-detect class
     const detected = detectIPClass(val)
-    if (detected) set('ipClass', detected)
+    if (detected) {
+      set('ipClass', detected)
+      const subnet = deriveSubnet(val, detected)
+      if (subnet) set('subnet', subnet)
+    }
   }
 
   function handleClassChange(cls: IPClass) {

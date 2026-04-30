@@ -242,8 +242,8 @@ function OverviewTab({ result, packetRate, onApplyFirewallRule }: {
           <div>
             <p className="text-xs font-semibold text-amber-300">Docker unavailable — approximate results</p>
             <p className="text-[11px] text-amber-300/70 mt-0.5 leading-relaxed">
-              Real Suricata mode was requested but Docker could not be reached.
-              Results below are from the Educational Simulation engine and may differ from real Suricata.
+              Real Simulation mode was requested but Docker could not be reached.
+              Results below are from the Educational Simulation engine and may differ from real results.
               Start Docker Desktop and re-run for production-accurate detection.
             </p>
           </div>
@@ -344,7 +344,7 @@ function OverviewTab({ result, packetRate, onApplyFirewallRule }: {
                 : 'bg-indigo-900/30 text-indigo-300'
           }`}>
             {result.mode === 'suricata' && !result.suricata_fallback
-              ? 'Real Suricata'
+              ? 'Real Simulation'
               : result.suricata_fallback
                 ? 'Educational Sim (fallback)'
                 : 'Educational Sim'}
@@ -775,7 +775,7 @@ function DetectionTab({ result }: { result: SimulationResult }) {
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-950/20 border border-green-800/20 text-[11px] text-green-300/80">
           <FlaskConical size={12} className="flex-shrink-0 text-green-400" />
           <span className="flex-1">
-            <span className="font-semibold text-green-300">Real Suricata</span>
+            <span className="font-semibold text-green-300">Real Simulation</span>
             {' '}— results come directly from a Suricata process running in Docker.
             These are production-accurate: if a rule fires here, it fires on a real sensor.
           </span>
@@ -795,7 +795,7 @@ function DetectionTab({ result }: { result: SimulationResult }) {
           <span className="flex-1">
             <span className="font-semibold text-indigo-300">Educational Sim</span>
             {' '}— rule evaluation is a simplified simulation. Most keywords are supported,
-            but results may differ from real Suricata. Switch to Real Suricata mode for production accuracy.
+            but results may differ from real Suricata. Switch to Real Simulation mode for production accuracy.
           </span>
           <button
             onClick={dismissLearning}
@@ -1021,7 +1021,7 @@ function DockerInstallInstructions() {
   )
 }
 
-// ─── Docker status panel (shown when Real Suricata is selected but not ready) ─
+// ─── Docker status panel (shown when Real Simulation is selected but not ready) ─
 
 function DockerStatusPanel({ status, loading }: { status: DockerStatus | null; loading: boolean }) {
   if (loading) {
@@ -1465,7 +1465,7 @@ export default function SimulationModal({
               >
                 <FlaskConical size={13} className={simMode === 'suricata' ? 'text-green-400' : 'text-gray-600'} />
                 <div>
-                  <p className="text-xs font-semibold">Real Suricata</p>
+                  <p className="text-xs font-semibold">Real Simulation</p>
                   <p className="text-[10px] text-gray-500 mt-0.5">Production-accurate · Docker</p>
                 </div>
               </button>
