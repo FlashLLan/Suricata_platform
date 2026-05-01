@@ -5,6 +5,27 @@ import {
   type DefenseCategory,
 } from '../../data/defenses'
 
+function validateIPCIDRField(value: string): string | null {
+  const lines = value.split('\n').map(l => l.trim()).filter(Boolean)
+  for (const line of lines) {
+    const parts = line.split('/')
+    if (parts.length > 2) return `"${line}": too many slashes`
+    const octets = parts[0].split('.')
+    if (octets.length !== 4) return `"${line}": must have 4 octets (e.g. 192.168.1.0)`
+    for (const oct of octets) {
+      if (!/^\d+$/.test(oct)) return `"${line}": "${oct}" is not a valid number`
+      const n = parseInt(oct, 10)
+      if (n < 0 || n > 255) return `"${line}": octet ${n} out of range (0–255)`
+    }
+    if (parts.length === 2) {
+      if (!/^\d+$/.test(parts[1])) return `"${line}": prefix must be a number`
+      const pfx = parseInt(parts[1], 10)
+      if (pfx < 0 || pfx > 32) return `"${line}": prefix /${pfx} out of range (0–32)`
+    }
+  }
+  return null
+}
+
 interface Props {
   noDefense: boolean
   enabled: string[]
@@ -24,6 +45,8 @@ export default function DefensePanel({
 }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [customOpen, setCustomOpen] = useState(false)
+  const [ipFieldValues, setIpFieldValues] = useState<Record<string, string>>({})
+  const [ipFieldErrors, setIpFieldErrors] = useState<Record<string, string | null>>({})
 
   const byCategory = DEFENSE_OPTIONS.reduce<Record<string, typeof DEFENSE_OPTIONS>>((acc, d) => {
     if (!acc[d.category]) acc[d.category] = []
@@ -139,16 +162,40 @@ export default function DefensePanel({
                       {def.configFields && def.configFields.length > 0 && isEnabled && (
                         <div className="space-y-2">
                           <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">Configuration</p>
-                          {def.configFields.map(field => (
-                            <div key={field.key}>
-                              <label className="block text-[10px] text-gray-400 mb-1">{field.label}</label>
-                              <input
-                                className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-white text-[11px] font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                defaultValue={field.defaultValue}
-                                placeholder={field.placeholder}
-                              />
-                            </div>
-                          ))}
+                          {def.configFields.map(field => {
+                            const stateKey = `${def.id}-${field.key}`
+                            if (field.type === 'ip-cidr') {
+                              const val = ipFieldValues[stateKey] ?? field.defaultValue
+                              const err = ipFieldErrors[stateKey] ?? null
+                              return (
+                                <div key={field.key}>
+                                  <label className="block text-[10px] text-gray-400 mb-1">{field.label}</label>
+                                  <textarea
+                                    rows={3}
+                                    className={`w-full px-2 py-1 bg-gray-800 border ${err ? 'border-red-600' : 'border-gray-700'} rounded text-white text-[11px] font-mono placeholder-gray-600 focus:outline-none focus:ring-1 ${err ? 'focus:ring-red-500' : 'focus:ring-blue-500'} resize-none`}
+                                    value={val}
+                                    placeholder={field.placeholder}
+                                    onChange={e => {
+                                      const v = e.target.value
+                                      setIpFieldValues(prev => ({ ...prev, [stateKey]: v }))
+                                      setIpFieldErrors(prev => ({ ...prev, [stateKey]: validateIPCIDRField(v) }))
+                                    }}
+                                  />
+                                  {err && <p className="text-[10px] text-red-400 mt-1 leading-relaxed">{err}</p>}
+                                </div>
+                              )
+                            }
+                            return (
+                              <div key={field.key}>
+                                <label className="block text-[10px] text-gray-400 mb-1">{field.label}</label>
+                                <input
+                                  className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-white text-[11px] font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                  defaultValue={field.defaultValue}
+                                  placeholder={field.placeholder}
+                                />
+                              </div>
+                            )
+                          })}
                         </div>
                       )}
                     </div>

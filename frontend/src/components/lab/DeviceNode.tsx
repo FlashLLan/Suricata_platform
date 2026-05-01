@@ -46,7 +46,7 @@ function DeviceNode({ data, selected }: NodeProps) {
         ring-2 ${flash ? 'ring-red-500 animate-pulse' : selected ? 'ring-white/40' : ZONE_RING[d.zone] ?? 'ring-transparent'}
         ${selected && !flash ? 'shadow-lg shadow-white/10' : ''}
         ${flash ? 'shadow-lg shadow-red-500/40' : ''}
-        min-w-[90px] cursor-pointer select-none
+        min-w-[90px] cursor-default select-none
         transition-all duration-150
       `}
       style={{ backdropFilter: 'blur(4px)' }}

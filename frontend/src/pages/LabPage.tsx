@@ -126,6 +126,44 @@ export default function LabPage() {
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
   const [isPanning, setIsPanning] = useState(false)
   const panCursorEl = useRef<HTMLStyleElement | null>(null)
+
+  useEffect(() => {
+    // Always override React Flow's default hand cursor on the pane
+    const defaultStyle = document.createElement('style')
+    defaultStyle.textContent = '.react-flow__pane { cursor: default !important; }'
+    document.head.appendChild(defaultStyle)
+
+    function applyMoveCursor() {
+      if (panCursorEl.current) return
+      const el = document.createElement('style')
+      // Same selector + later in document → wins over defaultStyle at equal specificity
+      el.textContent = '.react-flow__pane { cursor: move !important; } .react-flow__pane * { cursor: move !important; }'
+      document.head.appendChild(el)
+      panCursorEl.current = el
+    }
+    function removeMoveCursor() {
+      panCursorEl.current?.remove()
+      panCursorEl.current = null
+    }
+
+    function onDown(e: MouseEvent) {
+      if (e.button === 2) { e.preventDefault(); setIsPanning(true); applyMoveCursor(); return }
+      // Left-click drag on empty pane = selection box → also use move cursor
+      if (e.button === 0 && (e.target as HTMLElement).classList.contains('react-flow__pane')) {
+        applyMoveCursor()
+      }
+    }
+    function onUp() { setIsPanning(false); removeMoveCursor() }
+
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('mouseup', onUp)
+      removeMoveCursor()
+      defaultStyle.remove()
+    }
+  }, [])
   // Edge IDs that are animating during simulation (to restore them afterward)
   const animatingEdgeIds = useRef<string[]>([])
 
@@ -816,30 +854,6 @@ export default function LabPage() {
           onDrop={onDrop}
           onDragOver={onDragOver}
           onContextMenu={(e) => e.preventDefault()}
-          onMouseDown={(e) => {
-            if (e.button === 2) {
-              e.preventDefault()
-              setIsPanning(true)
-              if (!panCursorEl.current) {
-                const el = document.createElement('style')
-                el.textContent = '*, *::before, *::after { cursor: grabbing !important; }'
-                document.head.appendChild(el)
-                panCursorEl.current = el
-              }
-            }
-          }}
-          onMouseUp={(e) => {
-            if (e.button === 2) {
-              setIsPanning(false)
-              panCursorEl.current?.remove()
-              panCursorEl.current = null
-            }
-          }}
-          onMouseLeave={() => {
-            setIsPanning(false)
-            panCursorEl.current?.remove()
-            panCursorEl.current = null
-          }}
         >
           <ReactFlow
             nodes={nodes}

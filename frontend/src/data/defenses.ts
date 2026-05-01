@@ -11,6 +11,8 @@ export interface DefenseConfigField {
   label: string
   placeholder: string
   defaultValue: string
+  /** 'ip-cidr' fields get per-line IPv4/CIDR validation */
+  type?: 'ip-cidr'
 }
 
 export interface DefenseOption {
@@ -40,7 +42,7 @@ export const DEFENSE_OPTIONS: DefenseOption[] = [
     weaknesses:
       'Attackers can spoof source IPs, use proxies/VPNs, or rotate IPs. Internal attackers are unaffected. Requires constant list maintenance.',
     configFields: [
-      { key: 'blocked_ips', label: 'Blocked IP ranges (CIDR, one per line)', placeholder: '192.168.1.0/24\n10.0.0.5', defaultValue: '' },
+      { key: 'blocked_ips', label: 'Blocked IP ranges (CIDR, one per line)', placeholder: '192.168.1.0/24\n10.0.0.5', defaultValue: '', type: 'ip-cidr' },
     ],
   },
   {
