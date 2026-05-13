@@ -14,6 +14,7 @@ import logging
 from app.simulation.rule_parser import ParsedRule, parse_rule
 from app.simulation.scenarios import SimPacket, build_scenario
 from app.simulation.defenses import evaluate_defenses
+from app.simulation.command_parser import parse_custom_commands
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +33,11 @@ _DENIED_DIRECT_ZONE_PAIRS: frozenset[frozenset] = frozenset({
 
 # Scenarios where the attacker acts as a server (C2, DNS resolver proxy, normal web).
 # Traffic is initiated by an internal host, so the external↔internal check doesn't apply.
-_SKIP_ZONE_CHECK: set[str] = {"normal-browsing", "http-c2-beacon", "dns-tunneling"}
+_SKIP_ZONE_CHECK: set[str] = {
+    "normal-browsing", "http-c2-beacon", "dns-tunneling",
+    "metasploit-handler", "reverse-shell",
+    "custom-commands",
+}
 
 # Infrastructure device types that are allowed to bridge zones
 _GATEWAY_DEVICE_TYPES: set[str] = {"router", "firewall"}
@@ -46,8 +51,19 @@ _SCENARIO_FLOW_INFO: dict[str, dict] = {
     "nmap-syn-scan":    {"protocol": "tcp",  "dst_port": None},   # scans many ports
     "ping-sweep":       {"protocol": "icmp", "dst_port": None},
     "dns-tunneling":    {"protocol": "udp",  "dst_port": 53},
-    "http-c2-beacon":   {"protocol": "tcp",  "dst_port": 80},
-    "normal-browsing":  {"protocol": "tcp",  "dst_port": 80},
+    "http-c2-beacon":     {"protocol": "tcp",  "dst_port": 80},
+    "normal-browsing":    {"protocol": "tcp",  "dst_port": 80},
+    "nmap-os-scan":       {"protocol": "tcp",  "dst_port": None},
+    "udp-port-scan":      {"protocol": "udp",  "dst_port": None},
+    "nikto-scan":         {"protocol": "tcp",  "dst_port": 80},
+    "gobuster-scan":      {"protocol": "tcp",  "dst_port": 80},
+    "ftp-brute-force":    {"protocol": "tcp",  "dst_port": 21},
+    "rdp-brute-force":    {"protocol": "tcp",  "dst_port": 3389},
+    "xss-probe":          {"protocol": "tcp",  "dst_port": 80},
+    "lfi-attack":         {"protocol": "tcp",  "dst_port": 80},
+    "metasploit-handler": {"protocol": "tcp",  "dst_port": 4444},
+    "reverse-shell":      {"protocol": "tcp",  "dst_port": 4444},
+    "custom-commands":    {"protocol": "tcp",  "dst_port": None},
 }
 
 # ─── Detection-to-enforcement suggestion library ─────────────────────────────
@@ -241,7 +257,18 @@ _SCENARIO_PREREQS: dict[str, dict] = {
     "dns-tunneling":   {"required_ports": None, "required_types": None},
     # C2 beacon — internal host phones home to attacker; attacker IS the server
     "http-c2-beacon":  {"required_ports": None, "required_types": None},
-    "normal-browsing": {"required_ports": None, "required_types": None},
+    "normal-browsing":    {"required_ports": None, "required_types": None},
+    "nmap-os-scan":       {"required_ports": None, "required_types": None},
+    "udp-port-scan":      {"required_ports": None, "required_types": None},
+    "nikto-scan":         {"required_ports": [80, 443, 8080], "required_types": None},
+    "gobuster-scan":      {"required_ports": [80, 443, 8080], "required_types": None},
+    "ftp-brute-force":    {"required_ports": [21], "required_types": None, "port_label": "FTP (port 21)"},
+    "rdp-brute-force":    {"required_ports": [3389], "required_types": None, "port_label": "RDP (port 3389)"},
+    "xss-probe":          {"required_ports": [80, 443, 8080], "required_types": ["web-server"], "port_label": "HTTP/HTTPS", "type_label": "Web Server"},
+    "lfi-attack":         {"required_ports": [80, 443, 8080], "required_types": ["web-server"], "port_label": "HTTP/HTTPS", "type_label": "Web Server"},
+    "metasploit-handler": {"required_ports": None, "required_types": None},
+    "reverse-shell":      {"required_ports": None, "required_types": None},
+    "custom-commands":    {"required_ports": None, "required_types": None},
 }
 
 
@@ -1094,6 +1121,7 @@ def run_simulation(
     rule_texts: list[str],
     topology: dict,
     mode: str = "python",
+    custom_commands: Optional[str] = None,
 ) -> SimulationResult:
     """
     Run the simulation engine.
@@ -1164,7 +1192,15 @@ def run_simulation(
 
     # ── 7. Build traffic packets ──────────────────────────────────────────────
     primary_target = target_ips[0]
-    packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
+    if scenario_id == "custom-commands" and custom_commands:
+        packets = parse_custom_commands(custom_commands, attacker_ip, primary_target)
+        if not packets:
+            raise SimulationValidationError(
+                "No recognisable attack commands were found. "
+                "Use tools like nmap, hydra, sqlmap, curl, gobuster, nikto, medusa, nc, or dnscat2."
+            )
+    else:
+        packets = build_scenario(scenario_id, attacker_ip, primary_target, home_ips, external_ips)
 
     # ── 8. Check IDS visibility (upstream vs downstream of firewall) ─────────
     _fw_ip_for_ids = (

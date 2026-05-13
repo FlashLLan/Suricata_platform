@@ -21,6 +21,7 @@ export async function runSimulation(
   ruleTexts: string[],
   topology?: object,
   mode: 'python' | 'suricata' = 'python',
+  customCommands?: string,
 ): Promise<SimulationResult> {
   const { data } = await api.post<SimulationResult>('/simulate', {
     project_id: projectId,
@@ -28,6 +29,7 @@ export async function runSimulation(
     rule_texts: ruleTexts,
     topology,
     mode,
+    custom_commands: customCommands || undefined,
   })
   return data
 }

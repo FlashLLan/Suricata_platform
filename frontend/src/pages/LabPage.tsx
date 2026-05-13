@@ -125,42 +125,32 @@ export default function LabPage() {
   const [showExport, setShowExport] = useState(false)
   const [connectionWarning, setConnectionWarning] = useState<string | null>(null)
   const [isPanning, setIsPanning] = useState(false)
-  const panCursorEl = useRef<HTMLStyleElement | null>(null)
 
   useEffect(() => {
-    // Always override React Flow's default hand cursor on the pane
+    // Override React Flow's hand cursor with default on the pane
     const defaultStyle = document.createElement('style')
     defaultStyle.textContent = '.react-flow__pane { cursor: default !important; }'
     document.head.appendChild(defaultStyle)
 
-    function applyMoveCursor() {
-      if (panCursorEl.current) return
-      const el = document.createElement('style')
-      // Same selector + later in document → wins over defaultStyle at equal specificity
-      el.textContent = '.react-flow__pane { cursor: move !important; } .react-flow__pane * { cursor: move !important; }'
-      document.head.appendChild(el)
-      panCursorEl.current = el
-    }
-    function removeMoveCursor() {
-      panCursorEl.current?.remove()
-      panCursorEl.current = null
-    }
-
     function onDown(e: MouseEvent) {
-      if (e.button === 2) { e.preventDefault(); setIsPanning(true); applyMoveCursor(); return }
-      // Left-click drag on empty pane = selection box → also use move cursor
-      if (e.button === 0 && (e.target as HTMLElement).classList.contains('react-flow__pane')) {
-        applyMoveCursor()
-      }
+      if (e.button !== 2) return
+      e.preventDefault()
+      setIsPanning(true)
+      // Inline !important on body beats any stylesheet or React Flow internal style
+      document.body.style.setProperty('cursor', 'move', 'important')
     }
-    function onUp() { setIsPanning(false); removeMoveCursor() }
+    function onUp(e: MouseEvent) {
+      if (e.button !== 2) return
+      setIsPanning(false)
+      document.body.style.removeProperty('cursor')
+    }
 
     window.addEventListener('mousedown', onDown)
     window.addEventListener('mouseup', onUp)
     return () => {
       window.removeEventListener('mousedown', onDown)
       window.removeEventListener('mouseup', onUp)
-      removeMoveCursor()
+      document.body.style.removeProperty('cursor')
       defaultStyle.remove()
     }
   }, [])

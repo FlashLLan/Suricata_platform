@@ -1,15 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, ChevronDown, ChevronRight, Terminal, Plus, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Pencil } from 'lucide-react'
+import { X, Terminal, Plus, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Pencil, BookOpen } from 'lucide-react'
 import type { Node } from '@xyflow/react'
 import type { DeviceData, NetworkZone, DeviceType, IPClass, RuleCategory, CustomRuleEntry } from '../../types/lab'
-import {
-  ATTACK_COMMANDS, ATTACK_CATEGORY_LABELS, ATTACK_CATEGORY_COLORS,
-  type AttackCategory,
-} from '../../data/attacks'
 import { PREDEFINED_RULES, CATEGORY_LABELS, CATEGORY_COLORS } from '../../data/rules'
 import AddCustomRuleModal, { getCustomCategoryClasses } from './AddCustomRuleModal'
 import DefensePanel from './DefensePanel'
 import FirewallPolicyPanel from './FirewallPolicyPanel'
+import AttacksExplainedModal from './AttacksExplainedModal'
 
 // ─── IP helpers ───────────────────────────────────────────────────────────────
 
@@ -108,120 +105,34 @@ function IPClassSelector({ value, onChange }: { value: IPClass; onChange: (c: IP
 
 // ── Attacker Panel ────────────────────────────────────────────────────────────
 
-function AttackerPanel({
-  selected,
-  customCommands,
-  onToggle,
-  onCustomChange,
-}: {
-  selected: string[]
-  customCommands: string
-  onToggle: (id: string) => void
-  onCustomChange: (v: string) => void
-}) {
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [customOpen, setCustomOpen] = useState(false)
-
-  const byCategory = ATTACK_COMMANDS.reduce<Record<string, typeof ATTACK_COMMANDS>>((acc, cmd) => {
-    if (!acc[cmd.category]) acc[cmd.category] = []
-    acc[cmd.category].push(cmd)
-    return acc
-  }, {})
+function AttackerPanel() {
+  const [showAttacksModal, setShowAttacksModal] = useState(false)
 
   return (
     <div className="space-y-3">
+      {showAttacksModal && <AttacksExplainedModal onClose={() => setShowAttacksModal(false)} />}
+
       <div className="flex items-center gap-2 pt-1">
         <div className="h-px flex-1 bg-gray-800" />
         <span className="text-[10px] font-semibold uppercase tracking-widest text-red-500 flex items-center gap-1">
           <Terminal size={10} />
-          Attack Config
+          Attacker
         </span>
         <div className="h-px flex-1 bg-gray-800" />
       </div>
 
       <p className="text-[10px] text-gray-500 leading-relaxed">
-        Select attacks this machine will simulate. Selected attacks are shown in the simulation and linked to matching Suricata rules.
+        Configure this device's identity and network settings above. To run an attack simulation or write custom commands, open the Run Simulation panel.
       </p>
 
-      {/* Attack list by category */}
-      <div className="space-y-2">
-        {(Object.entries(byCategory) as [AttackCategory, typeof ATTACK_COMMANDS][]).map(([cat, cmds]) => (
-          <div key={cat} className="rounded-lg border border-gray-800 overflow-hidden">
-            <div className={`px-2 py-1 text-[10px] font-semibold border-b border-gray-800 ${ATTACK_CATEGORY_COLORS[cat]}`}>
-              {ATTACK_CATEGORY_LABELS[cat]}
-            </div>
-            {cmds.map((cmd) => {
-              const isSelected = selected.includes(cmd.id)
-              const isExpanded = expandedId === cmd.id
-              return (
-                <div key={cmd.id} className={`border-b border-gray-800/50 last:border-0 ${isSelected ? 'bg-red-950/20' : ''}`}>
-                  <div className="flex items-center gap-2 px-2 py-1.5">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => onToggle(cmd.id)}
-                      className="accent-red-500 flex-shrink-0 cursor-pointer"
-                    />
-                    <span
-                      className="flex-1 text-xs text-gray-300 cursor-pointer hover:text-white"
-                      onClick={() => setExpandedId(isExpanded ? null : cmd.id)}
-                    >
-                      {cmd.name}
-                    </span>
-                    <span className="text-[10px] text-gray-600 font-mono">{cmd.tool}</span>
-                    <button
-                      onClick={() => setExpandedId(isExpanded ? null : cmd.id)}
-                      className="text-gray-600 hover:text-gray-400"
-                    >
-                      {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                    </button>
-                  </div>
-
-                  {isExpanded && (
-                    <div className="px-3 pb-3 space-y-2">
-                      <pre className="text-[10px] text-green-400 font-mono bg-gray-900/80 rounded-lg p-2 whitespace-pre-wrap break-all leading-relaxed border border-gray-800">
-                        {cmd.cmd}
-                      </pre>
-                      <p className="text-[10px] text-gray-400 leading-relaxed">{cmd.description}</p>
-                      {cmd.linkedScenario && (
-                        <p className="text-[10px] text-indigo-400">
-                          Linked simulation: <span className="font-medium">{cmd.linkedScenario}</span>
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        ))}
-      </div>
-
-      {/* Custom commands */}
-      <div className="rounded-lg border border-gray-800 overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setCustomOpen(!customOpen)}
-          className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-400 hover:bg-gray-800/40 transition"
-        >
-          <span className="flex items-center gap-1.5 font-medium">
-            <Plus size={12} />
-            Custom attack commands
-          </span>
-          {customOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </button>
-        {customOpen && (
-          <div className="p-2 border-t border-gray-800">
-            <textarea
-              className="w-full px-2.5 py-2 bg-gray-900 border border-gray-700 rounded-lg text-green-400 text-[11px] font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-red-500 resize-none"
-              rows={5}
-              value={customCommands}
-              onChange={(e) => onCustomChange(e.target.value)}
-              placeholder={"# Write your own attack commands\nnmap -sS -p 80,443 192.168.1.0/24\nhydra -l root -P passwords.txt ssh://192.168.1.10"}
-            />
-          </div>
-        )}
-      </div>
+      <button
+        type="button"
+        onClick={() => setShowAttacksModal(true)}
+        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 text-gray-200 text-xs font-medium rounded-lg transition"
+      >
+        <BookOpen size={13} className="text-red-400" />
+        Attacks Explained
+      </button>
     </div>
   )
 }
@@ -513,11 +424,6 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
     if (!form.subnet) set('subnet', CLASS_SUBNET_DEFAULT[cls])
   }
 
-  function toggleAttack(id: string) {
-    const current = form.selectedAttacks
-    set('selectedAttacks', current.includes(id) ? current.filter(a => a !== id) : [...current, id])
-  }
-
   function toggleDefense(id: string) {
     const current = form.enabledDefenses
     set('enabledDefenses', current.includes(id) ? current.filter(d => d !== id) : [...current, id])
@@ -672,12 +578,7 @@ export default function DeviceConfigPanel({ node, onClose, onUpdate }: Props) {
 
         {/* Attacker panel */}
         {form.deviceType === 'attacker' && (
-          <AttackerPanel
-            selected={form.selectedAttacks}
-            customCommands={form.customAttackCommands}
-            onToggle={toggleAttack}
-            onCustomChange={v => set('customAttackCommands', v)}
-          />
+          <AttackerPanel />
         )}
 
         {/* IDS rules panel — shown only for Suricata IDS nodes */}

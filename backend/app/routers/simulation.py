@@ -18,6 +18,7 @@ class SimulateRequest(BaseModel):
     rule_texts: list[str]
     topology: Optional[dict[str, Any]] = None   # current canvas state (preferred)
     mode: str = "python"                         # "python" | "suricata"
+    custom_commands: Optional[str] = None        # used when scenario_id == "custom-commands"
 
 
 @router.post("")
@@ -43,7 +44,7 @@ def simulate(
             topology = {}
 
     try:
-        result = run_simulation(req.scenario_id, req.rule_texts, topology, mode=req.mode)
+        result = run_simulation(req.scenario_id, req.rule_texts, topology, mode=req.mode, custom_commands=req.custom_commands)
     except SimulationValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

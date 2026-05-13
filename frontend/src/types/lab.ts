@@ -143,12 +143,23 @@ export interface RuleEntry {
 export type ScenarioId =
   | 'normal-browsing'
   | 'nmap-syn-scan'
+  | 'nmap-os-scan'
+  | 'udp-port-scan'
+  | 'ping-sweep'
+  | 'nikto-scan'
+  | 'gobuster-scan'
   | 'ssh-brute-force'
   | 'http-brute-force'
+  | 'ftp-brute-force'
+  | 'rdp-brute-force'
   | 'sql-injection'
+  | 'xss-probe'
+  | 'lfi-attack'
   | 'dns-tunneling'
-  | 'ping-sweep'
   | 'http-c2-beacon'
+  | 'metasploit-handler'
+  | 'reverse-shell'
+  | 'custom-commands'
 
 export interface Scenario {
   id: ScenarioId

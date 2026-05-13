@@ -4,6 +4,7 @@ import {
   Loader2, Shield, AlertTriangle, CheckCircle2, Zap, Minimize2, Maximize2,
   Eye, EyeOff, Network, Activity, Target, ArrowRight, Circle,
   Minus, XCircle, ZapOff, Info, Clock, ArrowLeft, Server, FlaskConical, Flame, Copy, Ban,
+  Bookmark, Trash2, FolderOpen,
 } from 'lucide-react'
 import { SCENARIOS, PREDEFINED_RULES } from '../../data/rules'
 import { runSimulation, checkStatus } from '../../api/simulation'
@@ -13,6 +14,30 @@ import type {
 } from '../../types/lab'
 import type { Node, Edge } from '@xyflow/react'
 import type { DeviceData } from '../../types/lab'
+
+// ─── Custom attack persistence ────────────────────────────────────────────────
+
+const STORAGE_KEY = 'suricata-platform-custom-attacks'
+
+interface SavedAttack {
+  id: string
+  name: string
+  description: string
+  commands: string
+  createdAt: string
+}
+
+function loadAttacksFromStorage(): SavedAttack[] {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+
+function saveAttacksToStorage(attacks: SavedAttack[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(attacks))
+}
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -1133,6 +1158,11 @@ export default function SimulationModal({
   onApplyFirewallRule,
 }: Props) {
   const [scenarioId, setScenarioId] = useState(SCENARIOS[0].id)
+  const [customCommands, setCustomCommands] = useState('')
+  const [customName, setCustomName] = useState('')
+  const [customDescription, setCustomDescription] = useState('')
+  const [savedAttacks, setSavedAttacks] = useState<SavedAttack[]>(loadAttacksFromStorage)
+  const customCmdRef = useRef<HTMLTextAreaElement>(null)
   const [packetRate, setPacketRate] = useState(5)
   const [simMode, setSimMode] = useState<'python' | 'suricata'>('python')
   const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null)
@@ -1152,6 +1182,17 @@ export default function SimulationModal({
       .catch(() => setDockerStatus(null))
       .finally(() => setDockerStatusLoading(false))
   }, [])
+
+  // When custom-commands is selected: unlock split height so textarea is reachable, then focus it
+  useEffect(() => {
+    if (scenarioId !== 'custom-commands') return
+    setConfigH(null)
+    const id = requestAnimationFrame(() => {
+      customCmdRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      customCmdRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [scenarioId])
 
   // ── Modal resize (corner) ────────────────────────────────────────────────
   const [modalW, setModalW] = useState(672)
@@ -1216,7 +1257,7 @@ export default function SimulationModal({
     try {
       const ruleTexts = activeRules.map((r) => r.customText ?? r.entry.rule)
       const topology = { nodes, edges }
-      const res = await runSimulation(projectId, scenarioId, ruleTexts, topology, simMode)
+      const res = await runSimulation(projectId, scenarioId, ruleTexts, topology, simMode, scenarioId === 'custom-commands' ? customCommands : undefined)
       // Lock config section height before results appear so they get the remaining space
       if (configH === null && configSectionRef.current) {
         setConfigH(configSectionRef.current.offsetHeight)
@@ -1395,24 +1436,150 @@ export default function SimulationModal({
               Traffic Scenario
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {SCENARIOS.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => { setScenarioId(s.id); setResult(null) }}
-                  className={`text-left px-3 py-2.5 rounded-xl border transition ${
-                    scenarioId === s.id
-                      ? 'border-indigo-500 bg-indigo-900/30 text-white'
-                      : 'border-gray-700/50 bg-gray-800/30 text-gray-400 hover:border-gray-600'
-                  }`}
-                >
-                  <p className="text-xs font-semibold">{s.name}</p>
-                  <p className="text-[10px] text-gray-500 mt-0.5 line-clamp-1">{s.description}</p>
-                </button>
-              ))}
+              {SCENARIOS.map((s) => {
+                const isCustom = s.id === 'custom-commands'
+                const isSelected = scenarioId === s.id
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => { setScenarioId(s.id); setResult(null) }}
+                    className={`text-left px-3 py-2.5 rounded-xl border transition ${
+                      isCustom
+                        ? isSelected
+                          ? 'border-orange-500 bg-orange-900/30 text-white'
+                          : 'border-orange-700/50 bg-orange-900/10 text-orange-300 hover:border-orange-600 hover:bg-orange-900/20'
+                        : isSelected
+                          ? 'border-indigo-500 bg-indigo-900/30 text-white'
+                          : 'border-gray-700/50 bg-gray-800/30 text-gray-400 hover:border-gray-600'
+                    }`}
+                  >
+                    <p className="text-xs font-semibold">{s.name}</p>
+                    <p className={`text-[10px] mt-0.5 line-clamp-1 ${isCustom ? 'text-orange-500/70' : 'text-gray-500'}`}>{s.description}</p>
+                  </button>
+                )
+              })}
             </div>
             <div className="bg-gray-800/40 rounded-lg p-3">
               <p className="text-[11px] text-gray-400 leading-relaxed">{selectedScenario.description}</p>
             </div>
+
+            {scenarioId === 'custom-commands' && (
+              <div className="space-y-3 rounded-xl border border-orange-800/40 bg-orange-950/10 p-3">
+
+                {/* How it works note */}
+                <div className="flex items-start gap-2 px-2.5 py-2 bg-gray-900/60 rounded-lg border border-gray-800/60">
+                  <Info size={11} className="text-orange-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-gray-500 leading-relaxed">
+                    Commands are parsed into traffic packets and matched against your Suricata rules — same engine as predefined scenarios.
+                    Supports: <span className="text-gray-400 font-mono">nmap hydra sqlmap curl gobuster nikto medusa nc dnscat2 msfconsole</span>
+                  </p>
+                </div>
+
+                {/* Saved attacks */}
+                {savedAttacks.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                      <FolderOpen size={10} />
+                      Saved attacks
+                    </p>
+                    {savedAttacks.map(a => (
+                      <div key={a.id} className="flex items-center gap-2 px-2.5 py-2 bg-gray-800/60 rounded-lg border border-gray-700/40">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[11px] font-semibold text-gray-200 truncate">{a.name}</p>
+                          {a.description && <p className="text-[10px] text-gray-500 truncate">{a.description}</p>}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomName(a.name)
+                            setCustomDescription(a.description)
+                            setCustomCommands(a.commands)
+                            customCmdRef.current?.focus()
+                          }}
+                          className="text-[10px] text-orange-400 hover:text-orange-300 font-medium px-2 py-1 rounded hover:bg-orange-900/20 transition flex-shrink-0"
+                        >
+                          Load
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = savedAttacks.filter(x => x.id !== a.id)
+                            setSavedAttacks(updated)
+                            saveAttacksToStorage(updated)
+                          }}
+                          className="text-gray-600 hover:text-red-400 transition flex-shrink-0"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Name */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                    Name
+                  </label>
+                  <input
+                    className="w-full px-2.5 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-xs placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500 transition"
+                    value={customName}
+                    onChange={e => setCustomName(e.target.value)}
+                    placeholder="e.g. Full port scan + SSH brute"
+                  />
+                </div>
+
+                {/* Description */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                    Description <span className="normal-case font-normal text-gray-600">(optional)</span>
+                  </label>
+                  <input
+                    className="w-full px-2.5 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-xs placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500 transition"
+                    value={customDescription}
+                    onChange={e => setCustomDescription(e.target.value)}
+                    placeholder="What this attack simulates…"
+                  />
+                </div>
+
+                {/* Commands */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                    Commands
+                  </label>
+                  <textarea
+                    ref={customCmdRef}
+                    className="w-full px-3 py-2.5 bg-gray-900 border border-orange-800/60 rounded-xl text-green-400 text-[11px] font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500 resize-none leading-relaxed"
+                    rows={5}
+                    value={customCommands}
+                    onChange={e => setCustomCommands(e.target.value)}
+                    placeholder={"# One command per line — comments are ignored\nnmap -sS -p 22,80,443 {target}\nhydra -l admin -P rockyou.txt ssh://{target}"}
+                  />
+                </div>
+
+                {/* Save button */}
+                <button
+                  type="button"
+                  disabled={!customName.trim() || !customCommands.trim()}
+                  onClick={() => {
+                    const attack: SavedAttack = {
+                      id: `custom-${Date.now()}`,
+                      name: customName.trim(),
+                      description: customDescription.trim(),
+                      commands: customCommands.trim(),
+                      createdAt: new Date().toISOString(),
+                    }
+                    const updated = [attack, ...savedAttacks.filter(a => a.name !== attack.name)]
+                    setSavedAttacks(updated)
+                    saveAttacksToStorage(updated)
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-900/30 hover:bg-orange-900/50 disabled:opacity-40 disabled:cursor-not-allowed border border-orange-700/50 text-orange-300 text-[11px] font-medium rounded-lg transition"
+                >
+                  <Bookmark size={11} />
+                  Save attack
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Packet rate */}
@@ -1481,7 +1648,7 @@ export default function SimulationModal({
 
           <button
             onClick={handleRun}
-            disabled={loading || !!topologyError}
+            disabled={loading || !!topologyError || (scenarioId === 'custom-commands' && !customCommands.trim())}
             className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition"
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
